@@ -2,8 +2,8 @@
 
 import pytest
 
-from src.link_processor import extract_category, extract_links
-from src.models import Platform
+from src.link_processor import detect_mode, extract_category, extract_links, prepare_text_content
+from src.models import Platform, ProcessingMode
 
 
 ALL_PLATFORMS = ["youtube", "bilibili", "vimeo", "ted"]
@@ -114,3 +114,95 @@ class TestExtractCategory:
   def test_multiple_tags_takes_first(self):
     result = extract_category("[Tag1] text [Tag2] more")
     assert result == "Tag1"
+
+
+class TestDetectMode:
+  def test_article_tag_chinese(self):
+    mode, category = detect_mode("[文章] 一篇关于AI的文章")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category is None
+
+  def test_full_text_tag(self):
+    mode, category = detect_mode("[全文] 技术博客")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category is None
+
+  def test_article_tag_english(self):
+    mode, category = detect_mode("[article] Some article")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category is None
+
+  def test_article_with_category_colon(self):
+    mode, category = detect_mode("[文章:机器学习] AI论文")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category == "机器学习"
+
+  def test_article_with_category_fullwidth_colon(self):
+    mode, category = detect_mode("[文章：深度学习] 新论文")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category == "深度学习"
+
+  def test_article_with_english_category(self):
+    mode, category = detect_mode("[article:Research] A paper")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category == "Research"
+
+  def test_forward_fwd_prefix(self):
+    mode, category = detect_mode("Fwd: Newsletter from TechCrunch")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category is None
+
+  def test_forward_fw_prefix(self):
+    mode, category = detect_mode("Fw: Some article")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category is None
+
+  def test_forward_chinese_prefix(self):
+    mode, category = detect_mode("转发: 来自同事的技术分享")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category is None
+
+  def test_forward_chinese_fullwidth_colon(self):
+    mode, category = detect_mode("转发：一篇好文章")
+    assert mode == ProcessingMode.FULL_CONTENT
+    assert category is None
+
+  def test_regular_category_tag(self):
+    mode, category = detect_mode("[机器学习] 新的视频")
+    assert mode == ProcessingMode.LINKS_ONLY
+    assert category == "机器学习"
+
+  def test_no_tag_no_forward(self):
+    mode, category = detect_mode("Just a regular email")
+    assert mode == ProcessingMode.LINKS_ONLY
+    assert category is None
+
+  def test_regular_tag_with_colon_not_article(self):
+    mode, category = detect_mode("[项目:Alpha] 进度更新")
+    assert mode == ProcessingMode.LINKS_ONLY
+    assert category == "项目:Alpha"
+
+
+class TestPrepareTextContent:
+  def test_plain_text(self):
+    result = prepare_text_content("Hello world", None, "My Subject")
+    assert "My Subject" in result
+    assert "Hello world" in result
+
+  def test_html_converted(self):
+    html = "<p>Hello</p><p>World</p>"
+    result = prepare_text_content("", html, "Test")
+    assert "Hello" in result
+    assert "World" in result
+
+  def test_subject_as_title(self):
+    result = prepare_text_content("content", None, "Article Title")
+    lines = result.split("\n")
+    assert lines[0] == "Article Title"
+
+  def test_html_scripts_removed(self):
+    html = "<p>Good</p><script>alert('bad')</script><p>Content</p>"
+    result = prepare_text_content("", html, "Test")
+    assert "Good" in result
+    assert "Content" in result
+    assert "alert" not in result

@@ -5,6 +5,11 @@ from datetime import datetime
 from enum import Enum
 
 
+class ProcessingMode(str, Enum):
+  LINKS_ONLY = "links_only"
+  FULL_CONTENT = "full_content"
+
+
 class Platform(str, Enum):
   YOUTUBE = "youtube"
   BILIBILI = "bilibili"
@@ -48,6 +53,7 @@ class EmailMessage:
   body_html: str | None = None
   received_at: datetime = field(default_factory=datetime.now)
   category: str | None = None
+  mode: ProcessingMode = ProcessingMode.LINKS_ONLY
   links: list[VideoLink] = field(default_factory=list)
 
 
@@ -55,6 +61,10 @@ class EmailMessage:
 class ProcessingResult:
   email: EmailMessage
   authorized: bool = True
+  mode: ProcessingMode = ProcessingMode.LINKS_ONLY
+  content_submitted: bool = False
+  content_source_id: str | None = None
+  content_error: str | None = None
   links_found: int = 0
   links_valid: int = 0
   links_submitted: int = 0

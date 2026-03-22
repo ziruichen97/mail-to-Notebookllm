@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
-from src.models import Platform, VideoLink
+from src.models import Platform, ProcessingMode, VideoLink
 
 logger = logging.getLogger("mail2nlm")
 
@@ -162,3 +162,78 @@ def extract_category(subject: str) -> str | None:
       logger.info("Category extracted from subject: %s", category)
       return category
   return None
+
+
+# Full-content mode triggers
+_FULL_CONTENT_TAGS = ("文章", "全文", "article", "full")
+_FORWARD_PREFIXES = ("fwd:", "fw:", "转发:", "转发：")
+
+
+def detect_mode(subject: str) -> tuple[ProcessingMode, str | None]:
+  """Detect processing mode and category from subject line.
+
+  Patterns:
+    [文章]           → full_content, no category
+    [文章:机器学习]  → full_content, category = "机器学习"
+    Fwd: / 转发:     → full_content, no category
+    [机器学习]       → links_only, category = "机器学习"
+    (no tag)         → links_only, no category
+  """
+  # Check for [文章] or [文章:分类] tag
+  m = re.search(r"\[([^\]]+)\]", subject)
+  if m:
+    tag = m.group(1).strip()
+    # "[文章:分类名]" pattern
+    if ":" in tag or "：" in tag:
+      parts = re.split(r"[:：]", tag, maxsplit=1)
+      prefix = parts[0].strip().lower()
+      if prefix in _FULL_CONTENT_TAGS:
+        category = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+        logger.info("Full-content mode (tagged with category)")
+        return ProcessingMode.FULL_CONTENT, category
+    # "[文章]" alone
+    elif tag.lower() in _FULL_CONTENT_TAGS:
+      logger.info("Full-content mode (tagged)")
+      return ProcessingMode.FULL_CONTENT, None
+
+  # Check for forwarded email prefixes
+  subject_lower = subject.lower().strip()
+  for prefix in _FORWARD_PREFIXES:
+    if subject_lower.startswith(prefix):
+      logger.info("Full-content mode (forwarded email detected)")
+      return ProcessingMode.FULL_CONTENT, None
+
+  # Default: links-only mode, extract category normally
+  category = extract_category(subject)
+  return ProcessingMode.LINKS_ONLY, category
+
+
+def prepare_text_content(body_text: str, body_html: str | None, subject: str) -> str:
+  """Prepare email body for submission as a text source to NotebookLM.
+
+  Prefers HTML-to-text conversion for richer structure, falls back to plain text.
+  Prepends the subject as a title.
+  """
+  content_parts: list[str] = [subject, "", "---", ""]
+
+  if body_html:
+    try:
+      soup = BeautifulSoup(body_html, "html.parser")
+      # Remove script/style elements
+      for tag in soup(["script", "style"]):
+        tag.decompose()
+      text = soup.get_text(separator="\n")
+      # Collapse excessive blank lines
+      lines = [line.strip() for line in text.splitlines()]
+      text = "\n".join(line for i, line in enumerate(lines)
+                       if line or (i > 0 and lines[i - 1]))
+      if text.strip():
+        content_parts.append(text.strip())
+      else:
+        content_parts.append(body_text)
+    except Exception:
+      content_parts.append(body_text)
+  else:
+    content_parts.append(body_text)
+
+  return "\n".join(content_parts)

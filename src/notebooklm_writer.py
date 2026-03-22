@@ -29,6 +29,11 @@ class NotebookLMWriter(ABC):
     """Add links as sources to a notebook. Updates and returns the links."""
     ...
 
+  @abstractmethod
+  def add_text_source(self, notebook_id: str, title: str, content: str) -> str | None:
+    """Add raw text as a source. Returns source_id or None on failure."""
+    ...
+
 
 # ---------------------------------------------------------------------------
 # Enterprise API implementation
@@ -152,6 +157,28 @@ class EnterpriseAPIWriter(NotebookLMWriter):
 
     return links
 
+  def add_text_source(self, notebook_id: str, title: str, content: str) -> str | None:
+    url = f"{self.base_url}/notebooks/{notebook_id}/sources:batchCreate"
+    payload = {
+      "userContents": [{
+        "textContent": {"sourceName": title, "content": content}
+      }]
+    }
+    try:
+      with httpx.Client(timeout=60) as client:
+        resp = client.post(url, headers=self._headers(), json=payload)
+        resp.raise_for_status()
+        result = resp.json()
+      sources = result.get("sources", [])
+      if sources:
+        source_id = sources[0].get("sourceId", {}).get("id")
+        logger.info("Text source submitted via Enterprise API")
+        return source_id
+      return None
+    except Exception:
+      logger.exception("Enterprise API text source submission failed")
+      return None
+
 
 # ---------------------------------------------------------------------------
 # notebooklm-py implementation
@@ -219,6 +246,17 @@ class NotebookLMPyWriter(NotebookLMWriter):
     submitted = sum(1 for l in links if l.submit_status == SubmitStatus.SUBMITTED)
     logger.info("Submitted %d/%d source(s) via notebooklm-py", submitted, len(links))
     return links
+
+  def add_text_source(self, notebook_id: str, title: str, content: str) -> str | None:
+    client = self._get_client()
+    try:
+      source = client.add_text_source(notebook_id, content, title=title)
+      source_id = getattr(source, "id", None) or str(source)
+      logger.info("Text source submitted via notebooklm-py")
+      return source_id
+    except Exception:
+      logger.exception("Failed to add text source via notebooklm-py")
+      return None
 
 
 # ---------------------------------------------------------------------------

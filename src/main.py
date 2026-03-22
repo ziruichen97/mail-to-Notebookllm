@@ -8,10 +8,10 @@ from datetime import datetime
 from src.auth_guard import check_subject_key, is_authorized
 from src.config import AppConfig, load_config
 from src.email_client import fetch_unseen_emails, mark_as_seen, send_reply
-from src.link_processor import extract_category, extract_links
+from src.link_processor import detect_mode, extract_links, prepare_text_content
 from src.link_validator import validate_links
 from src.logger import setup_logger
-from src.models import ProcessingResult, SubmitStatus, ValidationStatus
+from src.models import ProcessingMode, ProcessingResult, SubmitStatus, ValidationStatus
 from src.notebooklm_writer import create_writer
 from src.notification import build_reply_body
 
@@ -46,7 +46,54 @@ def process_email(uid, email_msg, config, writer, logger) -> ProcessingResult:
     logger.info("Email rejected — subject key mismatch")
     return result
 
-  # Step 2: Extract links
+  # Step 2: Detect processing mode and category
+  mode, category = detect_mode(email_msg.subject)
+  email_msg.mode = mode
+  email_msg.category = category
+  result.mode = mode
+  notebook_name = _get_notebook_name(category, config)
+  result.notebook_name = notebook_name
+
+  logger.info("Processing mode: %s", mode.value)
+
+  # Step 3: Ensure notebook exists
+  try:
+    notebook_id = writer.ensure_notebook(notebook_name)
+    result.notebook_id = notebook_id
+  except Exception:
+    logger.exception("NotebookLM notebook creation failed")
+    result.error_message = "Failed to create/find notebook"
+    return result
+
+  # Step 4: Full-content mode — submit entire email body as text source
+  if mode == ProcessingMode.FULL_CONTENT:
+    text_content = prepare_text_content(
+      email_msg.body_text, email_msg.body_html, email_msg.subject
+    )
+    content_title = email_msg.subject or "Forwarded Email"
+    # Strip mode tags from title for cleaner display
+    for tag in ("[文章]", "[全文]", "[article]", "[full]"):
+      content_title = content_title.replace(tag, "").strip()
+    import re
+    content_title = re.sub(r"\[(文章|全文|article|full)[:：][^\]]*\]", "", content_title).strip()
+    for prefix in ("Fwd:", "Fw:", "转发:", "转发："):
+      if content_title.lower().startswith(prefix.lower()):
+        content_title = content_title[len(prefix):].strip()
+
+    try:
+      source_id = writer.add_text_source(notebook_id, content_title, text_content)
+      result.content_submitted = source_id is not None
+      result.content_source_id = source_id
+      if source_id:
+        logger.info("Full email content submitted as text source")
+      else:
+        result.content_error = "No source ID returned"
+        logger.warning("Text source submission returned no ID")
+    except Exception:
+      logger.exception("Failed to submit email content")
+      result.content_error = "Text source submission failed"
+
+  # Step 5: Extract video links (in both modes — full-content emails may also contain links)
   links = extract_links(
     email_msg.body_text,
     email_msg.body_html,
@@ -57,10 +104,11 @@ def process_email(uid, email_msg, config, writer, logger) -> ProcessingResult:
   result.links_found = len(links)
 
   if not links:
-    logger.info("No video links found in email")
+    if mode == ProcessingMode.LINKS_ONLY:
+      logger.info("No video links found in email")
     return result
 
-  # Step 3: Validate links
+  # Step 6: Validate links
   valid_links, invalid_links = validate_links(
     links,
     timeout=config.link_processing.validation_timeout,
@@ -73,23 +121,15 @@ def process_email(uid, email_msg, config, writer, logger) -> ProcessingResult:
     result.links_failed = len(invalid_links)
     return result
 
-  # Step 4: Determine category / notebook
-  category = extract_category(email_msg.subject)
-  email_msg.category = category
-  notebook_name = _get_notebook_name(category, config)
-  result.notebook_name = notebook_name
-
-  # Step 5: Submit to NotebookLM
+  # Step 7: Submit links to NotebookLM
   try:
-    notebook_id = writer.ensure_notebook(notebook_name)
-    result.notebook_id = notebook_id
     writer.add_sources(notebook_id, valid_links)
   except Exception:
-    logger.exception("NotebookLM write failed")
+    logger.exception("NotebookLM link submission failed")
     for link in valid_links:
       link.submit_status = SubmitStatus.FAILED
       link.error_message = "NotebookLM write failed"
-    result.error_message = "NotebookLM integration error"
+    result.error_message = "NotebookLM link submission error"
 
   result.links_submitted = sum(
     1 for l in valid_links if l.submit_status == SubmitStatus.SUBMITTED
@@ -150,7 +190,8 @@ def run(config_path: str | None = None) -> int:
     total_failed += result.links_failed
 
     # Send reply if configured
-    if config.notification.send_reply and result.links_found > 0:
+    has_content = result.links_found > 0 or result.mode == ProcessingMode.FULL_CONTENT
+    if config.notification.send_reply and has_content:
       try:
         sender_addr = _extract_sender_address(email_msg.sender)
         reply_body = build_reply_body(result)

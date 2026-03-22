@@ -30,6 +30,7 @@ https://youtu.be/def456
 ## 核心特性
 
 - **GitHub Actions 部署** — 零服务器、零成本，利用 GitHub 免费 CI 资源
+- **两种处理模式** — 链接提取（默认）+ 全文提交（转发文章、Newsletter）
 - **日志脱敏** — 所有日志自动遮蔽邮箱地址和视频链接，公开仓库安全可用
 - **智能分类** — 邮件主题 `[标签]` 自动映射到对应 Notebook
 - **安全控制** — 发件人白名单 + 可选密钥认证
@@ -100,28 +101,72 @@ cat ~/.notebooklm/storage_state.json   # 复制此文件内容
 
 ## 邮件格式
 
-### 指定分类
+系统支持两种处理模式：**链接提取**（默认）和**全文提交**。
 
-在主题行用方括号指定 Notebook 分类：
+### 模式一：链接提取（默认）
+
+在正文中列出视频链接，系统会提取、验证后提交到 NotebookLM：
 
 ```
+收件人: bot@gmail.com
 主题: [深度学习] 最新的 Transformer 教程
-```
 
-链接会被添加到名为"深度学习"的 Notebook 中（不存在则自动创建）。
-
-### 不指定分类
-
-不写方括号标签时，链接会按月归入默认 Notebook（如 `2026-03 视频收藏`）。
-
-### 多链接
-
-一封邮件可以包含多个链接，直接在正文中列出即可：
-
-```
 https://youtube.com/watch?v=abc
 https://youtube.com/watch?v=def
 https://bilibili.com/video/BVxxx
+```
+
+主题行用 `[分类名]` 指定 Notebook（不存在则自动创建）。不写标签时按月归入默认 Notebook。
+
+### 模式二：全文提交
+
+当你收到别人发来的文章、Newsletter、技术分享等，想把整篇邮件内容存入 NotebookLM 时，使用全文模式。
+
+**触发方式（任选其一）**：
+
+1. **在主题行加 `[文章]` 标签**（推荐）：
+
+```
+主题: [文章] 一篇关于大模型的深度分析
+主题: [文章:机器学习] 最新的 Transformer 论文    ← 同时指定分类
+主题: [全文] 技术博客精选
+```
+
+2. **直接转发邮件**（系统自动识别 `Fwd:` / `转发:` 前缀）：
+
+```
+主题: Fwd: Weekly AI Newsletter from TechCrunch
+主题: 转发: 同事分享的技术文章
+```
+
+**全文模式的处理逻辑**：
+- 邮件的完整正文会作为"文本源"提交到 NotebookLM
+- 如果正文中包含视频链接，这些链接也会被单独提取并提交
+- 两者会进入同一个 Notebook，便于在 NotebookLM 中一起总结
+
+**回执示例**：
+
+```
+处理完成！
+
+模式: 全文提交
+
+邮件全文已添加为文本源 ✓
+  → Notebook: 机器学习
+
+成功添加链接 (2 条)：
+  1. [youtube] https://www.youtube.com/watch?v=abc123
+     → Notebook: 机器学习
+  2. [bilibili] https://www.bilibili.com/video/BV1xxxx
+     → Notebook: 机器学习
+
+统计：
+  - 全文提交: 成功
+  - 链接数: 2
+  - 有效: 2
+  - 成功提交: 2
+  - 失败: 0
+  - 目标 Notebook: 机器学习
 ```
 
 ## 日志安全
