@@ -27,9 +27,10 @@
 - **双集成路径**：支持 NotebookLM Enterprise API 和 notebooklm-py
 - **容错机制**：自动重试、死信队列、处理结果回执邮件
 
-## 系统设计
+## 文档
 
-详细的架构设计文档请参阅 [docs/system-design.md](docs/system-design.md)。
+- [系统设计方案](docs/system-design.md) — 架构、数据模型、部署方案、开发路线图
+- [技术选型分析](docs/technical-analysis.md) — Python vs Go/Rust 对比、AI 分类 vs 用户指定分类分析
 
 ## 快速开始
 
@@ -62,7 +63,8 @@ mail-to-notebookllm/
 │   └── ...
 ├── tests/            # 测试
 ├── docs/             # 文档
-│   └── system-design.md
+│   ├── system-design.md
+│   └── technical-analysis.md
 └── README.md
 ```
 

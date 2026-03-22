@@ -175,10 +175,12 @@ auth:
 **选择：Python 3.11+**
 
 理由：
-- `imaplib` 是标准库的一部分，无需额外依赖
-- `notebooklm-py` 是 Python 编写的，可直接集成
-- NotebookLM Enterprise API 使用 REST，Python 的 `requests`/`httpx` 库可轻松调用
-- 丰富的邮件处理生态（`email`、`mailsuite`、`IMAPClient`）
+- `notebooklm-py` 是 Python 编写的，可直接 `import` 集成——选择 Go/Rust 则需要多语言混合架构
+- 项目是 I/O 密集型（99% 时间在等待 IMAP/HTTP 响应），Python asyncio 与 Go/Rust 在实际延迟上无可测量差异
+- `imaplib` 是标准库，`IMAPClient`、`BeautifulSoup` 等邮件/HTML 处理库成熟度领先
+- NotebookLM 自动化社区几乎全部使用 Python，参考方案丰富
+
+> 完整的 Python vs Go vs Rust 对比分析见 [docs/technical-analysis.md](technical-analysis.md#第一部分后端语言选型--python-vs-go-vs-rust)
 
 ### 3.2 核心依赖
 
@@ -422,23 +424,30 @@ class SubmitStatus(str, Enum):
 
 ### 5.2 分类策略
 
-链接按以下维度自动分类，决定写入哪个 Notebook：
+链接按以下优先级分类，决定写入哪个 Notebook：
 
 1. **按邮件主题行**（优先级最高）：
    - 主题行格式：`[分类名] 其他内容`
    - 示例：`[机器学习] 最新的 Transformer 教程` → 写入名为"机器学习"的 Notebook
    
-2. **按平台自动分类**：
+2. **AI 辅助分类**（可选，Phase 2）：
+   - 当用户未在主题行指定标签且启用 AI 分类时，调用 LLM 分析视频标题/描述进行自动归类
+   - 置信度低于阈值时自动回退到下一级策略
+   - 回执邮件中明确标注分类来源（用户指定 / AI 建议 / 回退策略）
+   
+3. **按平台自动分类**：
    - YouTube 视频 → `YouTube Videos` Notebook
    - Bilibili 视频 → `Bilibili Videos` Notebook
    
-3. **按日期聚合**（默认）：
+4. **按日期聚合**（默认兜底）：
    - 无明确分类时，按 `YYYY-MM` 格式归入月度 Notebook
    - 示例：`2026-03 视频收藏`
 
-4. **Notebook 容量管理**：
+5. **Notebook 容量管理**：
    - NotebookLM 单个 Notebook 的源数量上限为 300
    - 当 Notebook 接近上限时，自动创建新的分卷 Notebook（如 `机器学习 (2)`）
+
+> AI 分类的详细技术分析与设计方案见 [docs/technical-analysis.md](technical-analysis.md#第二部分邮件分类策略--用户指定-vs-ai-自动归类)
 
 ### 5.3 确认回执邮件格式
 
@@ -536,6 +545,15 @@ notebooklm:
     default_category: "monthly"        # 默认分类策略
     max_sources_per_notebook: 280      # 留出余量
     auto_create: true                  # 自动创建不存在的 Notebook
+
+# 分类配置
+classification:
+  strategy: "user_specified"           # "user_specified" | "ai_assisted" | "hybrid"
+  ai:
+    enabled: false                     # Phase 2 可选功能
+    provider: "gemini"                 # "gemini" | "openai" | "local"
+    confidence_threshold: 0.80         # AI 分类置信度阈值
+    fallback: "platform"              # AI 置信度不足时的回退策略
 
 # 存储配置
 storage:
@@ -687,7 +705,8 @@ mail-to-notebookllm/
 ├── data/                        # 运行时数据（git ignored）
 ├── logs/                        # 日志文件（git ignored）
 ├── docs/
-│   └── system-design.md         # 本文档
+│   ├── system-design.md         # 本文档
+│   └── technical-analysis.md    # 技术选型与 AI 分类分析
 ├── .env.example                 # 环境变量模板
 ├── .gitignore
 ├── pyproject.toml               # 项目元数据与依赖
@@ -806,6 +825,7 @@ class PlatformAdapter(Protocol):
 
 - 多平台支持（Bilibili、Vimeo 等）
 - 确认回执邮件
+- AI 辅助分类（可选，Gemini API / 本地模型）
 - 配置文件热加载
 - Docker 部署支持
 
