@@ -1,0 +1,56 @@
+# Mail-to-NotebookLM 配置文件
+# 复制为 config/config.yaml 并填入实际值
+# 敏感信息（密码、密钥）建议通过环境变量设置，而非写在此文件中
+
+email:
+  imap:
+    host: "imap.gmail.com"       # QQ 邮箱: imap.qq.com | 163: imap.163.com
+    port: 993
+    use_ssl: true
+  smtp:
+    host: "smtp.gmail.com"       # QQ 邮箱: smtp.qq.com | 163: smtp.163.com
+    port: 587
+    use_tls: true
+  username: "${EMAIL_USERNAME}"
+  password: "${EMAIL_PASSWORD}"  # Gmail 需使用应用专用密码 | QQ/163 使用授权码
+  folder: "INBOX"
+
+auth:
+  allowed_senders:
+    - "your-email@example.com"   # 允许哪些邮箱地址提交链接
+    # - "*@your-domain.com"      # 支持通配符
+  require_subject_key: false
+  subject_key: "${AUTH_SUBJECT_KEY}"
+  check_spf_dkim: false
+
+link_processing:
+  supported_platforms:
+    - youtube
+    - bilibili
+    - vimeo
+    - ted
+  allow_generic_urls: false      # 是否接受非视频平台的通用 URL
+  validation_timeout: 10
+  max_retries: 2
+  expand_short_urls: true
+
+notebooklm:
+  integration: "notebooklm_py"   # "notebooklm_py" 或 "enterprise_api"
+
+  # Enterprise API 设置（integration = enterprise_api 时需要）
+  project_number: "${GCP_PROJECT_NUMBER}"
+  location: "us"
+  endpoint_location: "us"
+  credentials_json: "${GCP_CREDENTIALS_JSON}"
+
+  # notebooklm-py 设置（integration = notebooklm_py 时需要）
+  auth_json: "${NOTEBOOKLM_AUTH_JSON}"
+
+  default_category: "monthly"    # 未指定分类时的策略: "monthly" = 按月归档
+  max_sources_per_notebook: 280
+
+notification:
+  send_reply: true               # 处理完成后是否回复邮件
+
+classification:
+  strategy: "user_specified"     # 从邮件主题行 [标签] 提取分类
