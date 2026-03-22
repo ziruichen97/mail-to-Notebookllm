@@ -50,23 +50,23 @@
 
 #### 2.2.1 邮件监控器 (Email Listener)
 
-**职责**：持续监控指定邮箱账户的收件箱，实时感知新邮件到达。
+**职责**：定期检查指定邮箱账户的收件箱，获取新邮件。
 
 **核心逻辑**：
-- 使用 IMAP IDLE 协议实现推送式监控（非轮询），降低延迟与资源消耗
-- 每 10 分钟自动续期 IDLE 连接，防止超时断开
-- 内置自动重连机制，处理网络波动
-- 获取邮件后标记为已读，避免重复处理
+- 通过 GitHub Actions Cron 每 10 分钟触发一次 IMAP 轮询
+- 每次运行获取所有 UNSEEN（未读）邮件
+- 处理完成后标记为 SEEN，依赖 IMAP 原生状态避免重复处理
+- 单次执行模式——处理完即退出，无需常驻进程
 
 **处理流程**：
 ```
-启动 → 连接 IMAP 服务器 → 进入 IDLE 监听
-       ↓ (收到新邮件通知)
-  获取邮件内容 → 传递给权限校验器
-       ↓ (IDLE 超时)
-  续期 IDLE 连接 → 继续监听
-       ↓ (连接断开)
-  指数退避重连 → 恢复监听
+GitHub Actions Cron 触发
+  → 连接 IMAP 服务器
+  → 获取所有 UNSEEN 邮件
+  → 逐封处理（权限校验 → 链接提取 → 验证 → 提交）
+  → 标记为 SEEN
+  → 发送回执
+  → 退出
 ```
 
 #### 2.2.2 权限校验器 (Auth Guard)
@@ -381,7 +381,7 @@ class SubmitStatus(str, Enum):
          │
          ▼
   ┌──────────────┐
-  │ 1. 邮件到达  │ ◄── IMAP IDLE 推送通知
+  │ 1. 邮件到达  │ ◄── GitHub Actions Cron 触发 IMAP 轮询
   │    收件箱    │
   └──────┬───────┘
          │
@@ -681,36 +681,34 @@ notifications:
 
 ```
 mail-to-notebookllm/
+├── .github/
+│   └── workflows/
+│       └── poll-email.yml       # GitHub Actions 定时工作流
 ├── config/
-│   ├── config.yaml              # 主配置文件
 │   └── config.example.yaml      # 配置文件模板
 ├── src/
 │   ├── __init__.py
-│   ├── main.py                  # 入口点
+│   ├── main.py                  # 入口点（单次运行模式）
 │   ├── config.py                # 配置加载与校验
-│   ├── email_listener.py        # 邮件监控器
+│   ├── logger.py                # 日志脱敏
+│   ├── email_client.py          # IMAP 收取 + SMTP 回复
 │   ├── auth_guard.py            # 权限校验器
 │   ├── link_processor.py        # 链接提取与处理
 │   ├── link_validator.py        # 链接验证器
 │   ├── notebooklm_writer.py     # NotebookLM 写入器
-│   ├── notification.py          # 回执邮件发送
-│   ├── models.py                # 数据模型（Pydantic + SQLAlchemy）
-│   └── storage.py               # 数据库操作
+│   ├── notification.py          # 回执邮件构建
+│   └── models.py                # 数据模型
 ├── tests/
 │   ├── __init__.py
 │   ├── test_auth_guard.py
 │   ├── test_link_processor.py
-│   ├── test_link_validator.py
-│   └── test_notebooklm_writer.py
-├── data/                        # 运行时数据（git ignored）
-├── logs/                        # 日志文件（git ignored）
+│   └── test_logger.py
 ├── docs/
 │   ├── system-design.md         # 本文档
 │   └── technical-analysis.md    # 技术选型与 AI 分类分析
 ├── .env.example                 # 环境变量模板
 ├── .gitignore
-├── pyproject.toml               # 项目元数据与依赖
-├── requirements.txt             # 依赖锁定文件
+├── requirements.txt             # Python 依赖
 └── README.md
 ```
 
@@ -722,59 +720,50 @@ mail-to-notebookllm/
 
 | 部署方式 | 适用场景 | 成本 | 运维复杂度 |
 |---------|---------|------|-----------|
+| **GitHub Actions（推荐）** | 个人长期使用 | 免费 | 极低 |
+| **Oracle Cloud 免费 VPS** | 需要实时处理 | 免费 | 低 |
+| **VPS / 云主机** | 大量邮件处理 | ~$5/月 | 中 |
+| **Cloudflare Email Workers** | 有自有域名 | 免费 | 低 |
 | **本地运行** | 开发调试 | 无 | 低 |
-| **VPS / 云主机** | 个人长期使用 | ~$5/月 | 中 |
-| **Docker 容器** | 标准化部署 | 取决于宿主 | 低 |
-| **Google Cloud Run** | 与 GCP 生态集成 | 按需付费 | 低 |
-| **树莓派 / NAS** | 家庭内网运行 | 一次性硬件成本 | 中 |
 
-### 10.2 推荐部署：Docker + 云主机
+### 10.2 推荐部署：GitHub Actions
 
-**Dockerfile 设计思路**：
+采用 GitHub Actions 的 Cron 定时触发，每 10 分钟轮询一次收件箱。
 
-```dockerfile
-# 多阶段构建
-FROM python:3.11-slim AS base
-# 安装依赖，复制代码，设置非 root 用户
-# 挂载 data/ 和 logs/ 为外部卷
-# 入口点：python -m src.main
+**架构模式**：
+```
+每 10 分钟 → GitHub Actions 启动 → 连接 IMAP → 获取未读邮件
+  → 处理链接 → 提交 NotebookLM → 发送回执 → 标记已读 → 退出
 ```
 
-**docker-compose 设计思路**：
+**优势**：
+- 完全免费（公开仓库无分钟限制）
+- 零服务器运维
+- 密钥通过 GitHub Secrets 安全管理
+- 内置日志脱敏，公开仓库不泄露隐私
+- 自带执行历史和失败告警
 
-```yaml
-services:
-  mail-to-notebooklm:
-    build: .
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./config:/app/config:ro
-    healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health')"]
-      interval: 60s
-```
+**工作流配置** (`.github/workflows/poll-email.yml`)：
+- 触发方式：`schedule (cron: '*/10 * * * *')` + 手动触发
+- 运行环境：`ubuntu-latest` + Python 3.11
+- 状态管理：依赖 IMAP SEEN 标记去重，无需外部数据库
 
-### 10.3 可选：健康检查端点
+**隐私保护**：
+- GitHub 自动遮蔽已注册 Secrets 的值
+- 日志层面额外对邮箱地址和 URL 做脱敏处理
+- 日志中只输出统计信息，不输出具体链接内容
 
-内嵌一个轻量 HTTP 服务（如 `aiohttp` 或 `FastAPI`），暴露以下端点：
+### 10.3 备选部署方案
 
-| 端点 | 用途 |
-|------|------|
-| `GET /health` | 服务存活检查 |
-| `GET /metrics` | 处理统计（已处理邮件数、成功/失败链接数等） |
-| `GET /status` | 当前 IMAP 连接状态、最近处理记录 |
+**Oracle Cloud 永久免费 VPS**：如需 IMAP IDLE 实时监控（而非 10 分钟轮询），可使用 Oracle Cloud 的永久免费 ARM 实例（4 核 / 24 GB），在亚太区域部署常驻 Python 进程。
+
+**Cloudflare Email Workers**：如有自有域名，可配置 Cloudflare Email Routing 将邮件事件直接推送给 Worker 处理，实现零延迟的事件驱动架构（需使用 TypeScript 重写）。
 
 ### 10.4 监控与告警
 
-- **日志**：结构化 JSON 日志输出，可接入 ELK / Loki / CloudWatch
-- **指标**：暴露 Prometheus 格式指标（可选）
-- **告警**：
-  - IMAP 连接持续失败 → 邮件/Webhook 通知管理员
-  - NotebookLM API 持续失败 → 邮件/Webhook 通知管理员
-  - 死信队列堆积超过阈值 → 邮件通知管理员
+- **日志**：GitHub Actions 运行日志自动保留 90 天
+- **失败告警**：通过 GitHub Actions 的通知设置，Workflow 失败时发送邮件通知
+- **手动检查**：随时可在 Actions 页面查看每次执行的详细日志
 
 ---
 
