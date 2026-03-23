@@ -1,0 +1,56 @@
+# Mail-to-NotebookLM Configuration
+# Copy to config/config.yaml and fill in actual values
+# Sensitive values (passwords, keys) should be set via environment variables
+
+email:
+  imap:
+    host: "imap.gmail.com"       # Outlook: outlook.office365.com
+    port: 993
+    use_ssl: true
+  smtp:
+    host: "smtp.gmail.com"       # Outlook: smtp.office365.com
+    port: 587
+    use_tls: true
+  username: "${EMAIL_USERNAME}"
+  password: "${EMAIL_PASSWORD}"  # Gmail: use app-specific password
+  folder: "INBOX"
+
+auth:
+  allowed_senders:
+    - "your-email@example.com"   # Which email addresses can submit links
+    # - "*@your-domain.com"      # Wildcard patterns supported
+  require_subject_key: false
+  subject_key: "${AUTH_SUBJECT_KEY}"
+  check_spf_dkim: false
+
+link_processing:
+  supported_platforms:
+    - youtube
+    - bilibili
+    - vimeo
+    - ted
+  allow_generic_urls: false      # Whether to accept non-video-platform URLs
+  validation_timeout: 10
+  max_retries: 2
+  expand_short_urls: true
+
+notebooklm:
+  integration: "notebooklm_py"   # "notebooklm_py" or "enterprise_api"
+
+  # Enterprise API settings (required when integration = enterprise_api)
+  project_number: "${GCP_PROJECT_NUMBER}"
+  location: "us"
+  endpoint_location: "us"
+  credentials_json: "${GCP_CREDENTIALS_JSON}"
+
+  # notebooklm-py settings (required when integration = notebooklm_py)
+  auth_json: "${NOTEBOOKLM_AUTH_JSON}"
+
+  default_category: "monthly"    # Fallback when no category specified: "monthly" = archive by month
+  max_sources_per_notebook: 280
+
+notification:
+  send_reply: true               # Send reply email after processing
+
+classification:
+  strategy: "user_specified"     # Extract category from email subject [tag]
