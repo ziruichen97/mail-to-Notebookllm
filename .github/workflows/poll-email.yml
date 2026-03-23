@@ -1,0 +1,47 @@
+name: Poll Email & Process Links
+
+on:
+  schedule:
+    # Every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: read
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          # Uncomment below if using notebooklm-py:
+          # pip install notebooklm-py
+          # Uncomment below if using Enterprise API:
+          # pip install google-auth
+
+      - name: Run email processor
+        env:
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_IMAP_HOST: ${{ secrets.EMAIL_IMAP_HOST }}
+          EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
+          AUTH_ALLOWED_SENDERS: ${{ secrets.AUTH_ALLOWED_SENDERS }}
+          NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
+          NOTEBOOKLM_INTEGRATION: ${{ secrets.NOTEBOOKLM_INTEGRATION }}
+          GCP_PROJECT_NUMBER: ${{ secrets.GCP_PROJECT_NUMBER }}
+          GCP_CREDENTIALS_JSON: ${{ secrets.GCP_CREDENTIALS_JSON }}
+        run: python -m src.main config/config.example.yaml
