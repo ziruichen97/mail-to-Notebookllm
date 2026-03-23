@@ -1,441 +1,441 @@
-# 技术架构分析：语言选型与 AI 分类设计
+# Technical Architecture Analysis: Language Selection and AI Classification Design
 
-> 本文档针对 Mail-to-NotebookLM 项目中两个关键设计决策进行深入技术分析：
-> 1. 为什么选择 Python 而非 Go 或 Rust？
-> 2. 分类功能为什么以用户显式指定为主，而非 AI 自动归类？
-
----
-
-## 第一部分：后端语言选型 — Python vs Go vs Rust
-
-### 1.1 项目负载特征分析
-
-在进行语言对比之前，先明确本项目的运行时特征，因为语言选型必须与负载模型匹配：
-
-| 特征 | 本项目的具体表现 |
-|------|----------------|
-| **并发模型** | 单连接长驻 IMAP IDLE，极低并发（用户数 = 1） |
-| **吞吐量** | 极低。典型场景：每天 1-10 封邮件，每封含 1-5 个链接 |
-| **瓶颈类型** | 100% I/O 密集 — IMAP 等待、HTTP 链接验证、NotebookLM API 调用 |
-| **计算复杂度** | 接近零。正则匹配、URL 解析、JSON 序列化，无 CPU 密集型运算 |
-| **延迟敏感度** | 低。邮件投递本身就有秒级延迟，处理结果不需要毫秒级响应 |
-| **部署形态** | 单实例长驻进程，跑在 VPS / 树莓派 / Docker 容器中 |
-| **生命周期** | 7×24 运行的后台守护进程 |
-
-**关键结论**：这是一个 I/O 等待占比超过 99% 的低吞吐单用户工具。语言在"原始计算速度"上的差异对本项目没有实际意义。
+> This document provides an in-depth technical analysis of two key design decisions in the Mail-to-NotebookLM project:
+> 1. Why choose Python over Go or Rust?
+> 2. Why is classification primarily user-specified rather than AI auto-classification?
 
 ---
 
-### 1.2 多维度对比
+## Part One: Backend Language Selection — Python vs Go vs Rust
 
-#### 1.2.1 性能对比与适用场景
+### 1.1 Project Workload Characteristics
+
+Before comparing languages, clarify this project's runtime profile. Language choice must match the workload model:
+
+| Characteristic | How it shows up in this project |
+|----------------|--------------------------------|
+| **Concurrency model** | Single long-lived IMAP IDLE connection; very low concurrency (user count = 1) |
+| **Throughput** | Very low. Typical: 1–10 emails per day, 1–5 links per email |
+| **Bottleneck type** | 100% I/O-bound — IMAP waits, HTTP link checks, NotebookLM API calls |
+| **Compute complexity** | Near zero. Regex, URL parsing, JSON serialization; no CPU-heavy work |
+| **Latency sensitivity** | Low. Email delivery already has second-scale delay; results need not be millisecond-fast |
+| **Deployment shape** | Single long-running process on VPS / Raspberry Pi / Docker |
+| **Lifecycle** | 24/7 background daemon |
+
+**Key takeaway**: This is a low-throughput, single-user tool where I/O wait dominates (>99%). Differences in raw compute speed between languages are not meaningful here.
+
+---
+
+### 1.2 Multi-Dimensional Comparison
+
+#### 1.2.1 Performance vs Fit
 
 ```
-                        性能特征对比
+                        Performance comparison
   ┌────────────────────────────────────────────────────┐
   │                                                    │
-  │  Rust ████████████████████████████████████  极致性能│
-  │  Go   ██████████████████████████████       高性能  │
-  │  Python ███████████                        中等    │
+  │  Rust ████████████████████████████████████  ultimate perf │
+  │  Go   ██████████████████████████████       high perf      │
+  │  Python ███████████                        moderate       │
   │                                                    │
-  │          ↑ 原始 CPU 计算性能（越长越快）              │
+  │          ↑ raw CPU compute (longer = faster)       │
   └────────────────────────────────────────────────────┘
 
-  但在本项目的 I/O 等待场景中：
+  But in this project's I/O-bound scenario:
 
   ┌────────────────────────────────────────────────────┐
   │                                                    │
-  │  Python ████████████████████████████████   ≈ 相同   │
-  │  Go     ████████████████████████████████   ≈ 相同   │
-  │  Rust   ████████████████████████████████   ≈ 相同   │
+  │  Python ████████████████████████████████   ≈ same │
+  │  Go     ████████████████████████████████   ≈ same │
+  │  Rust   ████████████████████████████████   ≈ same │
   │                                                    │
-  │          ↑ IMAP IDLE 等待 + HTTP I/O 场景            │
-  │            语言差异被 I/O 延迟完全掩盖               │
+  │          ↑ IMAP IDLE wait + HTTP I/O               │
+  │            language gap masked by I/O latency      │
   └────────────────────────────────────────────────────┘
 ```
 
-**详细说明**：
+**Details**:
 
-| 维度 | Python | Go | Rust |
-|------|--------|-----|------|
-| **原始 CPU 性能** | 基线 (1x) | 20-40x | 25-50x |
-| **I/O 异步性能** | asyncio 成熟，单线程事件循环 | goroutine 原生并发，极高效 | tokio 生态成熟，零成本抽象 |
-| **内存占用** | ~30-50 MB（解释器 + 依赖） | ~10-20 MB | ~5-10 MB |
-| **启动时间** | ~500ms | ~10ms | ~5ms |
-| **本项目实际影响** | 完全满足需求 | 性能过剩 | 性能过剩 |
+| Dimension | Python | Go | Rust |
+|-----------|--------|-----|------|
+| **Raw CPU performance** | Baseline (1x) | 20–40x | 25–50x |
+| **Async I/O** | asyncio mature, single-thread event loop | goroutines, very efficient | tokio mature, zero-cost abstractions |
+| **Memory footprint** | ~30–50 MB (interpreter + deps) | ~10–20 MB | ~5–10 MB |
+| **Startup time** | ~500ms | ~10ms | ~5ms |
+| **Impact on this project** | Fully adequate | Overkill | Overkill |
 
-**结论**：当系统 99% 的时间都在等待 IMAP 服务器推送通知或等待 HTTP 响应时，Python 在 `await` 上花的时间和 Rust 在 `.await` 上花的时间完全一样。性能差异在本项目中不构成选型因素。
+**Conclusion**: When ~99% of time is waiting on IMAP notifications or HTTP responses, time spent in Python `await` is the same as in Rust `.await`. Performance is not a selection factor here.
 
-Go/Rust 的性能优势在以下场景才会显现——而这些都不是本项目的特征：
-- 高并发 Web 服务器（万级连接）
-- 实时数据流处理
-- CPU 密集型计算（图像处理、加密、编解码）
-- 极低延迟要求（交易系统、游戏服务器）
+Go/Rust strengths matter in scenarios that **do not** describe this project:
+- High-concurrency web servers (tens of thousands of connections)
+- Real-time stream processing
+- CPU-heavy work (images, crypto, codecs)
+- Ultra-low latency (trading, game servers)
 
-#### 1.2.2 开发效率与生态系统
+#### 1.2.2 Developer Velocity and Ecosystem
 
-这是本项目选型的**决定性维度**。
+This is the **decisive** dimension for this project.
 
-| 维度 | Python | Go | Rust |
-|------|--------|-----|------|
-| **notebooklm-py 集成** | 直接 `import` 使用 | 需要通过子进程/FFI/REST 封装调用 | 需要通过子进程/FFI/REST 封装调用 |
-| **NotebookLM Enterprise API** | `httpx` / `google-auth` 即可 | `net/http` + 手写认证逻辑 | `reqwest` + 手写认证逻辑 |
-| **IMAP 协议库** | `IMAPClient` (成熟，IDLE 支持完善) | `go-imap` (可用，IDLE 需额外包) | `async-imap` (可用但社区小) |
-| **邮件解析** | `email` 标准库（内置） | `net/mail`（基础，HTML 解析需额外库） | `mailparse`（社区维护） |
-| **HTML 解析** | `BeautifulSoup` (标杆级) | `goquery` (够用) | `scraper` (够用) |
-| **ORM / 数据库** | `SQLAlchemy` (工业级) | `GORM` / `sqlx` | `diesel` / `sqlx` |
-| **配置管理** | `pydantic` + `pyyaml` (类型安全) | `viper` (成熟) | `config` + `serde` (强类型) |
-| **相关开源项目数量** | 丰富（NotebookLM 自动化几乎全是 Python） | 极少 | 极少 |
+| Dimension | Python | Go | Rust |
+|-----------|--------|-----|------|
+| **notebooklm-py integration** | Direct `import` | Subprocess / FFI / REST wrapper | Subprocess / FFI / REST wrapper |
+| **NotebookLM Enterprise API** | `httpx` / `google-auth` | `net/http` + hand-rolled auth | `reqwest` + hand-rolled auth |
+| **IMAP libraries** | `IMAPClient` (mature, solid IDLE) | `go-imap` (OK, IDLE needs extra) | `async-imap` (OK, smaller community) |
+| **Email parsing** | `email` stdlib | `net/mail` (basic; HTML needs extras) | `mailparse` (community) |
+| **HTML parsing** | `BeautifulSoup` (reference) | `goquery` (adequate) | `scraper` (adequate) |
+| **ORM / DB** | `SQLAlchemy` (industrial) | `GORM` / `sqlx` | `diesel` / `sqlx` |
+| **Config** | `pydantic` + `pyyaml` (typed) | `viper` (mature) | `config` + `serde` (strong types) |
+| **Related OSS volume** | Large (NotebookLM automation is mostly Python) | Very small | Very small |
 
-**关键依赖可用性 — 详细分析**：
+**Critical dependency availability — detail**:
 
 ```
-notebooklm-py (Python)  ──────  本项目核心依赖
+notebooklm-py (Python)  ──────  core dependency for this project
   │
-  │  如果选择 Go/Rust，需要以下额外架构来调用 notebooklm-py：
+  │  If Go/Rust is chosen, extra architecture is needed to call notebooklm-py:
   │
-  ├─ 方案 1：子进程调用
-  │   Go/Rust 主进程 → subprocess → Python 脚本
-  │   代价：进程间通信复杂、错误处理困难、仍需 Python 运行时
+  ├─ Option 1: subprocess
+  │   Go/Rust main → subprocess → Python script
+  │   Cost: IPC complexity, harder errors, still need Python runtime
   │
-  ├─ 方案 2：REST 封装层
-  │   Go/Rust 主进程 → HTTP → Python Flask/FastAPI 服务 → notebooklm-py
-  │   代价：多部署一个服务、网络开销、运维复杂度翻倍
+  ├─ Option 2: REST wrapper
+  │   Go/Rust main → HTTP → Python Flask/FastAPI → notebooklm-py
+  │   Cost: extra service, network overhead, doubled ops surface
   │
-  └─ 方案 3：不使用 notebooklm-py，仅用 Enterprise API
-      代价：放弃方案 B（个人用户路径），功能受限
+  └─ Option 3: drop notebooklm-py, Enterprise API only
+      Cost: abandon path B (personal users), reduced functionality
 ```
 
-无论 Go 还是 Rust，只要需要 `notebooklm-py`，最终都绕不开 Python 运行时。引入多语言混合架构会大幅增加系统复杂度，对一个单用户工具来说收益为零。
+Whether Go or Rust, if `notebooklm-py` is required, a Python runtime remains. Multi-language stacks add complexity with no payoff for a single-user tool.
 
-#### 1.2.3 开发速度估算
+#### 1.2.3 Rough Development Effort
 
-以本项目 MVP（Phase 1）的 5 个核心模块为基准：
+Against MVP (Phase 1) with five core modules:
 
-| 模块 | Python | Go | Rust |
-|------|--------|-----|------|
-| 邮件监控 (IMAP IDLE) | 紧凑 — IMAPClient 封装良好 | 适中 — go-imap 需较多样板代码 | 较重 — async-imap 文档少、需处理生命周期 |
-| 权限校验 | 简单 — 纯逻辑 | 简单 — 纯逻辑 | 简单 — 纯逻辑，但类型定义更多 |
-| 链接提取 + 验证 | 紧凑 — `re` + `httpx` | 适中 — `regexp` + `net/http` | 适中 — `regex` + `reqwest`，但 async 生命周期复杂 |
-| NotebookLM 写入 | 简单 — `notebooklm-py` 或 `httpx` | 困难 — 无原生 SDK，需自建 | 困难 — 无原生 SDK，需自建 |
-| 存储 + 模型 | 紧凑 — `SQLAlchemy` + `Pydantic` | 适中 — `GORM` 或手写 SQL | 较重 — `diesel` 宏 + 编译时检查 |
-| **总体开发投入** | **基线** | **约 1.5-2x** | **约 2.5-3.5x** |
+| Module | Python | Go | Rust |
+|--------|--------|-----|------|
+| Email monitor (IMAP IDLE) | Lean — IMAPClient wraps well | Medium — more boilerplate with go-imap | Heavy — sparse async-imap docs, lifetimes |
+| Auth checks | Simple — pure logic | Simple — pure logic | Simple — pure logic, more type noise |
+| Link extract + verify | Lean — `re` + `httpx` | Medium — `regexp` + `net/http` | Medium — `regex` + `reqwest`, async lifetimes |
+| NotebookLM write | Easy — `notebooklm-py` or `httpx` | Hard — no native SDK, build your own | Hard — no native SDK, build your own |
+| Storage + models | Lean — `SQLAlchemy` + `Pydantic` | Medium — `GORM` or raw SQL | Heavy — `diesel` macros + compile-time checks |
+| **Overall effort** | **Baseline** | **~1.5–2x** | **~2.5–3.5x** |
 
-#### 1.2.4 维护成本与部署复杂度
+#### 1.2.4 Maintenance and Deployment
 
-| 维度 | Python | Go | Rust |
-|------|--------|-----|------|
-| **部署产物** | 目录 + venv 或 Docker 镜像 | 单个静态二进制文件 | 单个静态二进制文件 |
-| **运行时依赖** | Python 解释器 + pip 包 | 无 | 无 |
-| **Docker 镜像大小** | ~150-250 MB (python-slim + 依赖) | ~10-30 MB (scratch/alpine) | ~10-20 MB (scratch/alpine) |
-| **依赖管理** | pip/poetry (偶尔有依赖冲突) | go.mod (极稳定) | cargo (极稳定) |
-| **调试便捷性** | 极好 — 动态类型 + REPL | 好 — 编译错误清晰 | 编译错误学习曲线陡峭 |
-| **热修复能力** | 改文件即生效（无编译步骤） | 需重新编译 | 需重新编译 |
+| Dimension | Python | Go | Rust |
+|-----------|--------|-----|------|
+| **Deploy artifact** | tree + venv or Docker image | single static binary | single static binary |
+| **Runtime** | Python + pip packages | none | none |
+| **Docker image size** | ~150–250 MB (python-slim + deps) | ~10–30 MB (scratch/alpine) | ~10–20 MB (scratch/alpine) |
+| **Deps** | pip/poetry (occasional conflicts) | go.mod (very stable) | cargo (very stable) |
+| **Debugging** | Excellent — dynamic types + REPL | Good — clear compile errors | Steep learning curve on errors |
+| **Hot fixes** | Edit file, run (no compile) | Rebuild | Rebuild |
 
-**Go/Rust 在部署上确实有优势**：单二进制文件分发简洁、镜像小。但在 Docker 化部署的前提下，这个差异的实际影响很小——150 MB 和 15 MB 的镜像在拉取和启动上的差异对一个常驻进程来说可以忽略。
+**Go/Rust do win on deployment**: single binary, small images. Under Docker, the practical gap is small — 150 MB vs 15 MB pull/start difference is negligible for a long-lived process.
 
-#### 1.2.5 团队/个人技术栈考量
+#### 1.2.5 Team / Personal Skill Fit
 
-本项目是一个个人/小团队工具。技术选型还需考虑：
+This is a personal or small-team tool. Also consider:
 
-- **NotebookLM 自动化社区**几乎全部使用 Python。遇到问题时，Stack Overflow、GitHub Issues、博客文章的解决方案都是 Python 代码。选择 Go/Rust 意味着在这个领域成为"开荒者"，缺乏可参考的现成方案。
-- **迭代成本**：个人工具需要快速试错。Python 的 REPL 和动态类型允许在运行时快速验证 API 行为（例如，交互式探索 `notebooklm-py` 的接口），而 Go/Rust 每次修改都需要编译循环。
+- The **NotebookLM automation community** is almost entirely Python. Stack Overflow, GitHub issues, and blog fixes are Python. Go/Rust means trailblazing with few copy-paste solutions.
+- **Iteration cost**: Personal tools need fast experiments. Python REPL and dynamic typing help probe APIs interactively (e.g. `notebooklm-py`); Go/Rust need a compile cycle per change.
 
 ---
 
-### 1.3 综合评估矩阵
+### 1.3 Weighted Scorecard
 
-| 评估维度 (权重) | Python | Go | Rust |
-|----------------|--------|-----|------|
-| 关键依赖可用性 (35%) | ★★★★★ | ★★☆☆☆ | ★★☆☆☆ |
-| 开发效率 (25%) | ★★★★★ | ★★★☆☆ | ★★☆☆☆ |
-| 生态契合度 (20%) | ★★★★★ | ★★★☆☆ | ★★☆☆☆ |
-| 运行性能 (5%) | ★★★☆☆ | ★★★★★ | ★★★★★ |
-| 部署便捷性 (10%) | ★★★☆☆ | ★★★★★ | ★★★★☆ |
-| 长期可维护性 (5%) | ★★★★☆ | ★★★★☆ | ★★★★★ |
-| **加权总分** | **4.55** | **3.10** | **2.55** |
+| Criterion (weight) | Python | Go | Rust |
+|--------------------|--------|-----|------|
+| Critical deps (35%) | ★★★★★ | ★★☆☆☆ | ★★☆☆☆ |
+| Dev efficiency (25%) | ★★★★★ | ★★★☆☆ | ★★☆☆☆ |
+| Ecosystem fit (20%) | ★★★★★ | ★★★☆☆ | ★★☆☆☆ |
+| Runtime perf (5%) | ★★★☆☆ | ★★★★★ | ★★★★★ |
+| Deploy ease (10%) | ★★★☆☆ | ★★★★★ | ★★★★☆ |
+| Long-term maintainability (5%) | ★★★★☆ | ★★★★☆ | ★★★★★ |
+| **Weighted total** | **4.55** | **3.10** | **2.55** |
 
-> 权重说明：性能权重仅 5%，因为本项目的 I/O 密集特征使语言层面的性能差异无法体现。关键依赖可用性权重最高（35%），因为 `notebooklm-py` 是个人用户路径的唯一选择，且不存在 Go/Rust 替代品。
+> Weights: performance is only 5% because I/O dominance makes language-level speed invisible. Critical dependencies are 35% because `notebooklm-py` is the only practical path for personal users and has no Go/Rust substitute.
 
-### 1.4 选型结论
+### 1.4 Decision
 
-**选择 Python 3.11+，原因概括为三条**：
+**Choose Python 3.11+ for three reasons**:
 
-1. **依赖锁定**：核心依赖 `notebooklm-py` 仅存在 Python 实现。选择其他语言需要多语言混合架构，复杂度增加远超收益。
-2. **I/O 密集场景下性能对等**：当 99% 时间在等待网络 I/O 时，Python 的 asyncio 与 Go 的 goroutine / Rust 的 tokio 在实际延迟上无可测量的差异。
-3. **生态与效率优势**：邮件处理 + NotebookLM 自动化的工具链、社区方案、参考实现全部集中在 Python 生态。
+1. **Dependency lock-in**: `notebooklm-py` exists only for Python. Other languages imply a polyglot design; complexity grows far faster than benefit.
+2. **Performance parity under I/O**: When ~99% of time is network wait, asyncio vs goroutines vs tokio shows no measurable end-to-end latency difference.
+3. **Ecosystem and speed**: Email + NotebookLM tooling, community answers, and reference code cluster in Python.
 
-**Python 的已知劣势及缓解措施**：
+**Known Python downsides and mitigations**:
 
-| 劣势 | 缓解措施 |
-|------|---------|
-| 镜像较大 (~200 MB) | 使用 `python:3.11-slim`，对常驻进程影响可忽略 |
-| 类型安全较弱 | 全面使用 `Pydantic` + `mypy` 进行静态类型检查 |
-| 依赖管理偶有冲突 | 使用 `poetry` 锁定版本 + Docker 隔离环境 |
-| GIL 限制并发 | 使用 `asyncio` 协程处理 I/O，不受 GIL 影响 |
+| Downside | Mitigation |
+|----------|------------|
+| Larger images (~200 MB) | `python:3.11-slim`; negligible for a daemon |
+| Weaker static safety | `Pydantic` + `mypy` |
+| Occasional dep conflicts | `poetry` lockfiles + Docker isolation |
+| GIL and concurrency | `asyncio` for I/O; GIL is not the bottleneck |
 
-### 1.5 什么情况下应该重新考虑选型？
+### 1.5 When to Revisit the Choice
 
-如果未来需求发生以下变化，Python 可能不再是最优选择：
+If requirements shift, Python may no longer be optimal:
 
-| 场景变化 | 建议转向 |
-|---------|---------|
-| 需要服务多用户（>100 并发邮箱监控） | Go — goroutine 对大量并发连接有原生优势 |
-| 需要做视频内容转码/处理（CPU 密集） | Rust — 零开销抽象适合计算密集任务 |
-| 需要极小部署包（嵌入式 / IoT 设备） | Go — 单二进制 ~10 MB，无运行时依赖 |
-| NotebookLM 发布了官方 Go/Rust SDK | 重新评估，消除依赖锁定因素 |
+| Change | Consider |
+|--------|----------|
+| Many users (>100 concurrent mailbox monitors) | Go — goroutines scale connections naturally |
+| Video transcoding / CPU-heavy pipelines | Rust — zero-cost abstractions for compute |
+| Tiny deploy footprint (embedded / IoT) | Go — ~10 MB binary, no runtime |
+| Official Go/Rust SDK for NotebookLM | Re-evaluate; dependency lock-in eases |
 
 ---
 
-## 第二部分：邮件分类策略 — 用户指定 vs AI 自动归类
+## Part Two: Email Classification — User-Specified vs AI Auto-Classification
 
-### 2.1 当前设计回顾
+### 2.1 Current Design
 
-现有设计采用**用户显式指定**的分类策略，优先级如下：
-
-```
-1. 邮件主题行 [分类名] 标签  →  精确映射到 Notebook
-2. 平台自动分类              →  YouTube / Bilibili 等
-3. 日期聚合（默认兜底）       →  YYYY-MM 月度归档
-```
-
-为什么没有首先采用 AI 自动分类？以下从五个维度详细分析。
-
-### 2.2 AI 自动分类的技术实现方案
-
-如果要实现 AI 自动分类，可选的技术路径如下：
-
-#### 方案 A：调用云端 LLM API
+The design favors **explicit user classification**, in priority order:
 
 ```
-邮件到达 → 提取链接 → 获取视频元数据（标题、描述、标签）
+1. Subject line [category name] tag  →  exact Notebook mapping
+2. Platform auto-classification      →  YouTube / Bilibili, etc.
+3. Date bucketing (default fallback) →  YYYY-MM monthly archive
+```
+
+Why not lead with AI classification? Five angles below.
+
+### 2.2 How AI Auto-Classification Could Be Built
+
+If AI classification were added, plausible paths:
+
+#### Option A: Cloud LLM API
+
+```
+Email arrives → extract links → fetch video metadata (title, description, tags)
                                     ↓
-                          组装 Prompt 发送给 LLM
-                          "请将以下视频分类到合适的类别中：
-                           标题：XXX
-                           描述：XXX
-                           候选类别：[机器学习, 编程教程, ...]"
+                          Build prompt for LLM
+                          "Classify this video into the best category:
+                           Title: XXX
+                           Description: XXX
+                           Candidate categories: [machine learning, programming tutorials, ...]"
                                     ↓
-                           LLM 返回分类结果
+                           LLM returns category
                                     ↓
-                          写入对应 Notebook
+                          Write to the chosen Notebook
 ```
 
-| 方面 | 细节 |
-|------|------|
-| 可选 API | Google Gemini API / OpenAI GPT / Anthropic Claude |
-| 延迟 | 每次分类增加 1-3 秒 |
-| 成本 | ~$0.001-0.01/次（取决于模型和 token 量） |
-| 准确率 | 高（>90%），但依赖 Prompt 质量和类别定义清晰度 |
+| Aspect | Detail |
+|--------|--------|
+| APIs | Google Gemini / OpenAI GPT / Anthropic Claude |
+| Latency | +1–3s per classification |
+| Cost | ~$0.001–0.01/call (model and tokens) |
+| Accuracy | Often high (>90%), depends on prompt and category definitions |
 
-#### 方案 B：本地嵌入模型 + 语义相似度
+#### Option B: Local embeddings + semantic similarity
 
 ```
-邮件到达 → 提取链接 → 获取视频标题
+Email arrives → extract links → fetch video title
                           ↓
-              sentence-transformers 生成标题向量
+              sentence-transformers embeds title
                           ↓
-              与预定义类别的向量做余弦相似度
+              Cosine similarity vs predefined category vectors
                           ↓
-              选择最相似的类别
+              Pick closest category
 ```
 
-| 方面 | 细节 |
-|------|------|
-| 模型 | `all-MiniLM-L6-v2` (~80 MB) 或 `paraphrase-multilingual-MiniLM-L12-v2` (多语言) |
-| 延迟 | <100ms/次（本地推理） |
-| 成本 | 零（离线运行） |
-| 准确率 | 中等（70-85%），对模糊类别区分能力弱 |
-| 部署代价 | 需额外 ~200 MB 模型文件，PyTorch 依赖使镜像增大 ~1 GB |
+| Aspect | Detail |
+|--------|--------|
+| Models | `all-MiniLM-L6-v2` (~80 MB) or `paraphrase-multilingual-MiniLM-L12-v2` |
+| Latency | <100ms local inference |
+| Cost | Zero (offline) |
+| Accuracy | Moderate (70–85%); weak on fuzzy boundaries |
+| Deploy cost | ~200 MB model; PyTorch can add ~1 GB to images |
 
-#### 方案 C：轻量级关键词规则 + TF-IDF
+#### Option C: Lightweight keywords + TF-IDF
 
 ```
-邮件到达 → 提取链接 → 获取视频标题和描述
+Email arrives → extract links → fetch title and description
                           ↓
-              TF-IDF 特征提取 + 预训练分类器
+              TF-IDF features + pretrained classifier
                           ↓
-              返回分类结果
+              Return category
 ```
 
-| 方面 | 细节 |
-|------|------|
-| 依赖 | `scikit-learn` (~30 MB) |
-| 延迟 | <10ms |
-| 成本 | 零 |
-| 准确率 | 低到中（60-75%），需要大量标注数据预训练 |
-| 局限 | 冷启动问题严重——新用户没有训练数据 |
+| Aspect | Detail |
+|--------|--------|
+| Deps | `scikit-learn` (~30 MB) |
+| Latency | <10ms |
+| Cost | Zero |
+| Accuracy | Low–mid (60–75%); needs labeled training data |
+| Limit | Severe cold start — new users have no training set |
 
-### 2.3 为什么默认选择用户指定
+### 2.3 Why User-Specified Is the Default
 
-#### 2.3.1 确定性与用户控制
+#### 2.3.1 Determinism and Control
 
-AI 分类的最大问题不是准确率不够高，而是**不确定性**。
-
-```
-场景：用户发送一封包含 3 个视频链接的邮件
-
-用户指定模式：
-  主题：[深度学习] 新视频
-  结果：3 个链接全部进入"深度学习" Notebook ✓ 确定性 100%
-
-AI 自动分类模式：
-  链接 1：《Transformer 架构详解》     → AI 判断：深度学习 ✓
-  链接 2：《Python 数据处理实战》       → AI 判断：Python 编程 ✗ (用户希望在深度学习)
-  链接 3：《GPU 选购指南 2026》         → AI 判断：硬件评测 ✗ (用户希望在深度学习)
-  结果：3 个链接分散在 3 个 Notebook 中，用户需要手动整理
-```
-
-在本项目的上下文中，**分类是用户主观意图的表达，而非客观属性的推断**。同一个视频链接，用户 A 可能归入"学习资料"，用户 B 归入"项目参考"，用户 C 归入"周五分享会素材"——这不是 AI 能推断的。
-
-对于邮件这种用户需要特意编写发送的输入方式，在主题行加一个 `[标签]` 的认知负担几乎为零。
-
-#### 2.3.2 架构简洁性
-
-用户指定分类是**纯字符串匹配**——没有外部依赖、没有网络调用、没有模型加载、没有准确率波动。
+The main issue with AI classification is not raw accuracy — it is **uncertainty**.
 
 ```
-用户指定的处理路径：
+Scenario: user sends one email with 3 video links
 
-  subject = "[机器学习] some title"
-  category = extract_bracket_tag(subject)   # 1 行正则
-  notebook = get_or_create(category)         # 数据库查询
+User-specified:
+  Subject: [deep learning] new videos
+  Result: all 3 links land in "deep learning" Notebook ✓ 100% deterministic
+
+AI auto-class:
+  Link 1: "Transformer architecture deep dive"     → AI: deep learning ✓
+  Link 2: "Python data processing hands-on"       → AI: Python programming ✗ (user wanted deep learning)
+  Link 3: "GPU buying guide 2026"                  → AI: hardware reviews ✗ (user wanted deep learning)
+  Result: three Notebooks; user must clean up
+```
+
+Here, **classification expresses subjective intent, not objective attributes**. The same URL might be "study material" for user A, "project reference" for B, and "Friday talk fodder" for C — not something a model can infer reliably.
+
+For email, adding `[tag]` in the subject is almost zero extra cognitive load.
+
+#### 2.3.2 Architectural Simplicity
+
+User tags are **plain string matching** — no external services, no network, no models, no accuracy drift.
+
+```
+User-specified path:
+
+  subject = "[machine learning] some title"
+  category = extract_bracket_tag(subject)   # one-line regex
+  notebook = get_or_create(category)        # DB lookup
   done.
 
-AI 分类的处理路径：
+AI path:
 
   subject = "some title"
   links = extract_links(email)
   for link in links:
-      metadata = fetch_video_metadata(link)       # HTTP 请求（可能失败）
-      prompt = build_classification_prompt(        # 构建 Prompt
+      metadata = fetch_video_metadata(link)       # HTTP (can fail)
+      prompt = build_classification_prompt(         # prompt build
           metadata, existing_categories
       )
-      result = await llm_api.classify(prompt)      # API 调用（可能失败、可能超时）
-      confidence = result.confidence               # 需要置信度判断
+      result = await llm_api.classify(prompt)      # API (can fail, timeout)
+      confidence = result.confidence               # thresholding
       if confidence < threshold:
-          category = fallback_strategy(link)        # 回退逻辑
+          category = fallback_strategy(link)       # fallback
       else:
           category = result.category
       notebook = get_or_create(category)
   done.
 ```
 
-AI 路径引入了 3 个额外的失败点（元数据获取、API 调用、置信度不足），每个都需要独立的错误处理和回退策略。对于一个以可靠性为首要目标的自动化工具，每增加一个失败点都会降低端到端成功率。
+AI adds three extra failure modes (metadata, API, low confidence), each needing handling and fallback. For a reliability-first automation, every new failure mode lowers end-to-end success.
 
-#### 2.3.3 数据隐私与安全性
+#### 2.3.3 Privacy and Security
 
-| 关注点 | 用户指定 | AI 分类（云端 LLM） | AI 分类（本地模型） |
-|--------|---------|-------------------|-------------------|
-| 视频标题发送到第三方 | 否 | 是 — 发送给 OpenAI/Google/Anthropic | 否 |
-| 邮件内容泄露风险 | 无 | 有 — Prompt 中可能包含邮件上下文 | 无 |
-| 符合 GDPR/隐私法规 | 默认合规 | 需要数据处理协议 (DPA) | 合规 |
-| API 密钥管理 | 不需要额外密钥 | 需要管理 LLM API 密钥 | 不需要 |
+| Concern | User-specified | AI (cloud LLM) | AI (local model) |
+|---------|----------------|----------------|------------------|
+| Video titles to third party | No | Yes — OpenAI/Google/Anthropic | No |
+| Email content leakage | None | Risk — prompts may include context | None |
+| GDPR / privacy posture | Compliant by default | Needs DPA, etc. | Compliant |
+| API keys | No extra keys | LLM API keys | No |
 
-使用云端 LLM 意味着用户的视频观看偏好（标题、描述）被发送到第三方服务。虽然大多数 LLM 提供商承诺不使用 API 数据训练模型，但这仍然是一个额外的信任链路。
+Cloud LLM sends viewing preferences (titles, descriptions) to vendors. Vendors often promise not to train on API data; it is still an extra trust link.
 
-#### 2.3.4 成本效益分析
+#### 2.3.4 Cost–Benefit
 
-| 方案 | 初始开发成本 | 运行时成本 | 维护成本 |
-|------|------------|-----------|---------|
-| **用户指定** | 极低 — 正则匹配 | 零 | 接近零 |
-| **LLM API 分类** | 中 — Prompt 工程 + 回退逻辑 | ~$0.3-3/月 (按 30-300 个视频) | 中 — API 变更、Prompt 调优 |
-| **本地嵌入模型** | 高 — 模型选型 + 推理管线 | 零（但增加内存 ~500 MB） | 中 — 模型更新、类别变化时重建索引 |
-| **TF-IDF 分类器** | 高 — 需要训练数据 | 零 | 高 — 持续标注 + 再训练 |
+| Approach | Build cost | Run cost | Maintain cost |
+|----------|------------|----------|---------------|
+| **User-specified** | Minimal — regex | Zero | Near zero |
+| **LLM API** | Medium — prompts + fallback | ~$0.3–3/mo (30–300 videos) | Medium — API churn, prompt tuning |
+| **Local embeddings** | High — model + pipeline | Zero (+~500 MB RAM) | Medium — model updates, reindex on category change |
+| **TF-IDF classifier** | High — labeled data | Zero | High — ongoing labeling + retrain |
 
-对于一个日处理量仅为个位数的个人工具，AI 分类的收益（节省写一个 `[标签]` 的时间）与成本（开发时间、运行时成本、维护复杂度）严重不匹配。
+For single-digit daily volume, AI savings (skipping a `[tag]`) do not justify build, run, and ops cost.
 
-#### 2.3.5 冷启动问题
+#### 2.3.5 Cold Start
 
-AI 分类需要知道用户的类别体系。但在系统初始化时：
+AI needs the user's category scheme. At bootstrap:
 
-- 用户还没有任何 Notebook
-- 没有历史分类数据可供学习
-- AI 不知道用户希望按什么维度组织内容（按主题？按项目？按用途？）
+- No Notebooks yet
+- No history to learn from
+- No signal whether organization is by topic, project, or use case
 
-用户指定模式天然不存在冷启动问题——第一封邮件的 `[标签]` 就定义了第一个类别。
+User tags avoid cold start — the first email's `[tag]` defines the first category.
 
 ---
 
-### 2.4 AI 分类作为可选增强（推荐方案）
+### 2.4 AI as an Optional Enhancement (Recommended Shape)
 
-尽管默认采用用户指定，但 AI 分类可以作为一个**可选的增强层**引入，在以下条件满足时提供价值：
+Default stays user-specified; AI can be an **optional layer** when conditions warrant.
 
-#### 2.4.1 混合分类策略
+#### 2.4.1 Hybrid Flow
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                     分类决策流程（增强版）                       │
+│              Classification decision flow (enhanced)           │
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
-│  邮件到达                                                      │
+│  Email arrives                                                 │
 │     │                                                          │
 │     ▼                                                          │
-│  主题行包含 [标签] ？                                           │
+│  Subject has [tag]?                                            │
 │     │                                                          │
-│     ├── YES → 使用用户指定的标签 ✓ (终止)                       │
+│     ├── YES → use user tag ✓ (stop)                            │
 │     │                                                          │
-│     └── NO → AI 分类已启用？                                    │
+│     └── NO → AI classification enabled?                        │
 │              │                                                  │
-│              ├── NO → 回退到平台分类 / 日期聚合 (终止)           │
+│              ├── NO → platform / date fallback (stop)         │
 │              │                                                  │
-│              └── YES → 获取视频元数据                            │
+│              └── YES → fetch video metadata                    │
 │                         │                                       │
 │                         ▼                                       │
-│                   调用 AI 分类                                   │
+│                   call AI classifier                            │
 │                         │                                       │
 │                         ▼                                       │
-│                   置信度 ≥ 阈值？                                │
+│                   confidence ≥ threshold?                       │
 │                         │                                       │
-│                         ├── YES → 使用 AI 建议的类别              │
-│                         │         (回执邮件中标注"AI 建议")       │
+│                         ├── YES → use AI-suggested category     │
+│                         │         (receipt: "AI suggested")      │
 │                         │                                       │
-│                         └── NO → 回退到平台分类 / 日期聚合       │
+│                         └── NO → platform / date fallback      │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-**核心原则**：用户显式指定永远优先于 AI 建议。AI 只在用户未提供标签时作为"智能回退"介入。
+**Rule**: explicit user tags always beat AI. AI is a smart fallback only when the user omits a tag.
 
-#### 2.4.2 推荐的 AI 分类实现路径
+#### 2.4.2 Suggested AI Implementation
 
-综合考虑本项目特征，推荐 **Gemini API**（如果已有 GCP 凭据）或 **本地轻量模型** 作为 AI 分类引擎：
+Given project constraints, prefer **Gemini API** (if GCP creds already exist) or a **small local model**:
 
-**首选：Gemini API（与现有 GCP 生态复用）**
-
-```
-优势：
-  - 已有 GCP 认证凭据（Enterprise API 方案 A），无需额外注册
-  - Gemini Flash 模型成本极低（免费额度足以覆盖个人使用）
-  - 多语言支持好（中英文视频标题都能处理）
-  - 延迟 <1s（Flash 模型）
-
-Prompt 模板设计：
-  系统指令：你是一个视频内容分类助手。
-  已有类别：{从数据库获取当前所有 Notebook 名称}
-  视频标题：{title}
-  视频描述：{description}（如有）
-  
-  请将此视频归入最合适的已有类别。如果没有合适的类别，建议一个新类别名。
-  返回 JSON：{"category": "xxx", "confidence": 0.95, "is_new": false}
-```
-
-**备选：本地 sentence-transformers**
+**Primary: Gemini API (reuse GCP stack)**
 
 ```
-优势：
-  - 完全离线，零运行时成本
-  - 无隐私顾虑
-  
-劣势：
-  - 镜像增大约 1 GB
-  - 不适合树莓派等低配设备
-  - 对新类别的适应需要重建索引
+Pros:
+  - GCP auth already in place (Enterprise path A), no new vendor signup
+  - Gemini Flash is very cheap (free tier often enough for personal use)
+  - Strong multilingual titles (Chinese/English)
+  - <1s latency (Flash)
+
+Prompt sketch:
+  System: You are a video classification assistant.
+  Existing categories: {Notebook names from DB}
+  Video title: {title}
+  Video description: {description} (if any)
+
+  Assign this video to the best existing category. If none fit, propose a new name.
+  Return JSON: {"category": "xxx", "confidence": 0.95, "is_new": false}
 ```
 
-#### 2.4.3 配置设计
+**Fallback: local sentence-transformers**
 
-在 `config.yaml` 中新增 AI 分类配置段：
+```
+Pros:
+  - Fully offline, zero marginal cost
+  - No privacy send-out
+
+Cons:
+  - ~1 GB image growth
+  - Weak on Raspberry Pi–class hardware
+  - New categories need index rebuild
+```
+
+#### 2.4.3 Config Shape
+
+Add an AI section to `config.yaml`:
 
 ```yaml
 classification:
@@ -445,7 +445,7 @@ classification:
     enabled: false
     provider: "gemini"            # "gemini" | "openai" | "local"
     confidence_threshold: 0.80
-    fallback: "monthly"           # AI 置信度不足时的回退策略
+    fallback: "monthly"           # when AI confidence is low
 
     gemini:
       model: "gemini-2.0-flash"
@@ -460,41 +460,41 @@ classification:
       model_path: "models/"
 ```
 
-#### 2.4.4 回执邮件中标注分类来源
+#### 2.4.4 Receipt Email: Show Classification Source
 
-无论使用哪种分类方式，回执邮件中应清楚标注分类来源，让用户知道分类是如何决定的：
+Whatever path is used, receipts should state how each item was classified:
 
 ```
-✅ 成功添加 (3 条)：
+✅ Successfully added (3 items):
   1. [YouTube] https://youtube.com/watch?v=abc123
-     → Notebook: 机器学习 | 分类方式: 用户指定 [机器学习]
+     → Notebook: Machine Learning | Source: user-specified [Machine Learning]
   2. [YouTube] https://youtube.com/watch?v=def456
-     → Notebook: 深度学习 | 分类方式: AI 建议 (置信度 92%)
+     → Notebook: Deep Learning | Source: AI suggested (confidence 92%)
   3. [Bilibili] https://bilibili.com/video/BV1xx...
-     → Notebook: 2026-03 视频收藏 | 分类方式: 日期归档（AI 置信度不足）
+     → Notebook: 2026-03 saved videos | Source: date archive (AI confidence too low)
 ```
 
 ---
 
-### 2.5 分类策略总结
+### 2.5 Strategy Summary
 
-| 策略 | 适用场景 | 建议 |
-|------|---------|------|
-| **用户指定**（默认） | 用户有明确的组织结构，愿意在主题行写标签 | Phase 1 MVP 即实现 |
-| **平台分类**（内置回退） | 用户不写标签时，按来源平台粗粒度归组 | Phase 1 MVP 即实现 |
-| **日期聚合**（兜底） | 无任何分类信息时的最终回退 | Phase 1 MVP 即实现 |
-| **AI 辅助**（可选增强） | 用户链接量大、类别多、不想每次写标签 | Phase 2 作为可选功能 |
+| Strategy | When it fits | Recommendation |
+|----------|--------------|----------------|
+| **User-specified** (default) | Clear mental model; OK typing a subject tag | Phase 1 MVP |
+| **Platform** (built-in fallback) | No tag — coarse grouping by source | Phase 1 MVP |
+| **Date bucketing** | Final fallback when nothing else applies | Phase 1 MVP |
+| **AI-assisted** (optional) | Many links/categories; skip tags often | Phase 2, optional |
 
-**设计哲学**："默认简单，按需增强"。核心路径的可靠性不应依赖任何外部 AI 服务。AI 分类是锦上添花，不是基本功能。
+**Philosophy**: default simple, enhance on demand. Core reliability must not depend on external AI. AI is optional polish, not a foundation.
 
 ---
 
-## 总结
+## Closing
 
-### 语言选型
+### Language choice
 
-Python 不是因为"性能足够"而被选中——而是因为在这个项目的特定约束下（`notebooklm-py` 依赖锁定、I/O 密集负载模型、单用户规模、NotebookLM 自动化社区生态），它是唯一不需要引入多语言混合架构就能完成所有需求的选择。Go 和 Rust 在本项目中的性能优势无法体现，但它们的生态劣势会实质性地增加开发和维护成本。
+Python was not picked because it is "fast enough" — under this project's constraints (`notebooklm-py` lock-in, I/O-heavy profile, single-user scale, Python-centric NotebookLM community), it is the option that meets all needs **without** a polyglot stack. Go/Rust speed does not surface here; ecosystem gaps would raise real dev and ops cost.
 
-### 分类策略
+### Classification
 
-用户指定分类不是因为"AI 做不到"——而是因为分类本质上是用户意图的表达，不是客观属性的推断。在邮件这种低频、主动触发的输入方式下，在主题行加一个 `[标签]` 的成本远低于维护一套 AI 分类系统的成本。AI 分类作为可选增强保留在 Phase 2 路线图中，在用户未提供标签时提供"智能回退"。
+User-specified tags are not the default because "AI cannot do it" — because categories are **intent**, not objective facts. For low-frequency, deliberate email input, a `[tag]` in the subject costs far less than operating an AI classifier. AI remains a Phase 2 optional fallback when users omit tags.
