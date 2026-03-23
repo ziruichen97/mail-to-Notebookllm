@@ -1,24 +1,24 @@
-# Mail-to-NotebookLM 配置文件
-# 复制为 config/config.yaml 并填入实际值
-# 敏感信息（密码、密钥）建议通过环境变量设置，而非写在此文件中
+# Mail-to-NotebookLM Configuration
+# Copy to config/config.yaml and fill in actual values
+# Sensitive values (passwords, keys) should be set via environment variables
 
 email:
   imap:
-    host: "imap.gmail.com"       # QQ 邮箱: imap.qq.com | 163: imap.163.com
+    host: "imap.gmail.com"       # Outlook: outlook.office365.com
     port: 993
     use_ssl: true
   smtp:
-    host: "smtp.gmail.com"       # QQ 邮箱: smtp.qq.com | 163: smtp.163.com
+    host: "smtp.gmail.com"       # Outlook: smtp.office365.com
     port: 587
     use_tls: true
   username: "${EMAIL_USERNAME}"
-  password: "${EMAIL_PASSWORD}"  # Gmail 需使用应用专用密码 | QQ/163 使用授权码
+  password: "${EMAIL_PASSWORD}"  # Gmail: use app-specific password
   folder: "INBOX"
 
 auth:
   allowed_senders:
-    - "your-email@example.com"   # 允许哪些邮箱地址提交链接
-    # - "*@your-domain.com"      # 支持通配符
+    - "your-email@example.com"   # Which email addresses can submit links
+    # - "*@your-domain.com"      # Wildcard patterns supported
   require_subject_key: false
   subject_key: "${AUTH_SUBJECT_KEY}"
   check_spf_dkim: false
@@ -29,28 +29,28 @@ link_processing:
     - bilibili
     - vimeo
     - ted
-  allow_generic_urls: false      # 是否接受非视频平台的通用 URL
+  allow_generic_urls: false      # Whether to accept non-video-platform URLs
   validation_timeout: 10
   max_retries: 2
   expand_short_urls: true
 
 notebooklm:
-  integration: "notebooklm_py"   # "notebooklm_py" 或 "enterprise_api"
+  integration: "notebooklm_py"   # "notebooklm_py" or "enterprise_api"
 
-  # Enterprise API 设置（integration = enterprise_api 时需要）
+  # Enterprise API settings (required when integration = enterprise_api)
   project_number: "${GCP_PROJECT_NUMBER}"
   location: "us"
   endpoint_location: "us"
   credentials_json: "${GCP_CREDENTIALS_JSON}"
 
-  # notebooklm-py 设置（integration = notebooklm_py 时需要）
+  # notebooklm-py settings (required when integration = notebooklm_py)
   auth_json: "${NOTEBOOKLM_AUTH_JSON}"
 
-  default_category: "monthly"    # 未指定分类时的策略: "monthly" = 按月归档
+  default_category: "monthly"    # Fallback when no category specified: "monthly" = archive by month
   max_sources_per_notebook: 280
 
 notification:
-  send_reply: true               # 处理完成后是否回复邮件
+  send_reply: true               # Send reply email after processing
 
 classification:
-  strategy: "user_specified"     # 从邮件主题行 [标签] 提取分类
+  strategy: "user_specified"     # Extract category from email subject [tag]

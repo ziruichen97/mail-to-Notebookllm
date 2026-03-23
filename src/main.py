@@ -20,7 +20,7 @@ def _get_notebook_name(category: str | None, config: AppConfig) -> str:
   if category:
     return category
   if config.notebooklm.default_category == "monthly":
-    return datetime.now().strftime("%Y-%m 视频收藏")
+    return datetime.now().strftime("%Y-%m Videos")
   return config.notebooklm.default_category
 
 
