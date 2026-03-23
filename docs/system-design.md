@@ -1,84 +1,84 @@
-# Mail-to-NotebookLM 系统设计方案
+# Mail-to-NotebookLM System Design
 
-## 1. 项目概述
+## 1. Project Overview
 
-### 1.1 背景与动机
+### 1.1 Background and Motivation
 
-用户无法直接访问 NotebookLM 的 Web 界面，但仍需将视频内容（YouTube、Bilibili 等平台）的链接提交到 NotebookLM 中进行批量总结处理。本工具通过邮件作为中间通道，实现"发邮件 → 自动提取链接 → 写入 NotebookLM"的端到端自动化流程。
+Users cannot access the NotebookLM web UI directly but still need to submit video links (YouTube, Bilibili, and similar platforms) to NotebookLM for batch summarization. This tool uses email as an intermediary channel to implement an end-to-end automated flow: **send email → extract links automatically → write to NotebookLM**.
 
-### 1.2 核心功能
+### 1.2 Core Features
 
-| 功能 | 说明 |
-|------|------|
-| 邮件监控 | 实时监听指定邮箱的收件箱，检测新邮件 |
-| 链接提取 | 从邮件正文和附件中自动识别视频平台链接 |
-| 链接验证 | 校验链接格式合法性与目标页面可达性 |
-| NotebookLM 写入 | 将有效链接通过 API 批量添加为 NotebookLM 数据源 |
-| 权限控制 | 仅接受白名单内发件人的邮件 |
-| 错误追踪 | 完整的错误日志与处理失败回执 |
+| Feature | Description |
+|---------|-------------|
+| Email monitoring | Listen to the configured mailbox inbox in near real time and detect new messages |
+| Link extraction | Automatically identify video-platform links from message body and attachments |
+| Link validation | Check link format validity and target page reachability |
+| NotebookLM write | Add valid links as NotebookLM data sources in bulk via API |
+| Access control | Accept mail only from senders on an allowlist |
+| Error tracking | Full error logs and failure receipts for failed processing |
 
 ---
 
-## 2. 系统架构
+## 2. System Architecture
 
-### 2.1 整体架构图
+### 2.1 High-Level Architecture
 
 ```
 ┌─────────────┐     ┌──────────────────────────────────────────────────┐     ┌──────────────────┐
 │             │     │           Mail-to-NotebookLM Service             │     │                  │
-│  授权用户    │     │                                                  │     │  NotebookLM      │
-│  (邮件客户端) ├────►│  ┌───────────┐  ┌───────────┐  ┌─────────────┐  ├────►│  Enterprise API   │
-│             │     │  │ 邮件监控器  │─►│ 链接处理器  │─►│ NotebookLM  │  │     │  / notebooklm-py │
-└─────────────┘     │  │ (Listener) │  │(Processor)│  │  写入器      │  │     │                  │
-                    │  └───────────┘  └─────┬─────┘  │ (Writer)    │  │     └──────────────────┘
-                    │        │              │         └─────────────┘  │
+│ Authorized  │     │                                                  │     │  NotebookLM      │
+│ user (mail  ├────►│  ┌───────────┐  ┌───────────┐  ┌─────────────┐  ├────►│  Enterprise API   │
+│ client)     │     │  │   Email   │─►│    Link   │─►│  NotebookLM │  │     │  / notebooklm-py │
+│             │     │  │ Listener  │  │ Processor │  │   Writer    │  │     │                  │
+└─────────────┘     │  └───────────┘  └─────┬─────┘  └─────────────┘  │     └──────────────────┘
+                    │        │              │                          │
                     │        ▼              ▼                          │
                     │  ┌───────────┐  ┌───────────┐                   │
-                    │  │ 权限校验器  │  │ 链接验证器  │                   │
-                    │  │(AuthGuard)│  │(Validator)│                   │
+                    │  │ Auth      │  │   Link    │                   │
+                    │  │ Guard     │  │ Validator │                   │
                     │  └───────────┘  └───────────┘                   │
                     │        │              │                          │
                     │        ▼              ▼                          │
                     │  ┌──────────────────────────┐                   │
-                    │  │    SQLite / JSON 存储     │                   │
-                    │  │  (链接记录 + 处理状态)     │                   │
+                    │  │   SQLite / JSON store    │                   │
+                    │  │ (link records + status)  │                   │
                     │  └──────────────────────────┘                   │
                     └──────────────────────────────────────────────────┘
 ```
 
-### 2.2 组件职责
+### 2.2 Component Responsibilities
 
-#### 2.2.1 邮件监控器 (Email Listener)
+#### 2.2.1 Email Listener
 
-**职责**：定期检查指定邮箱账户的收件箱，获取新邮件。
+**Responsibility**: Periodically check the configured mailbox inbox and fetch new messages.
 
-**核心逻辑**：
-- 通过 GitHub Actions Cron 每 10 分钟触发一次 IMAP 轮询
-- 每次运行获取所有 UNSEEN（未读）邮件
-- 处理完成后标记为 SEEN，依赖 IMAP 原生状态避免重复处理
-- 单次执行模式——处理完即退出，无需常驻进程
+**Core logic**:
+- GitHub Actions Cron triggers IMAP polling every 10 minutes
+- Each run fetches all UNSEEN (unread) messages
+- After processing, messages are marked SEEN; native IMAP state avoids duplicate handling
+- Single-run mode—exit after processing; no long-lived daemon required
 
-**处理流程**：
+**Processing flow**:
 ```
-GitHub Actions Cron 触发
-  → 连接 IMAP 服务器
-  → 获取所有 UNSEEN 邮件
-  → 逐封处理（权限校验 → 链接提取 → 验证 → 提交）
-  → 标记为 SEEN
-  → 发送回执
-  → 退出
+GitHub Actions Cron trigger
+  → Connect to IMAP server
+  → Fetch all UNSEEN messages
+  → Process each (auth check → link extraction → validation → submit)
+  → Mark as SEEN
+  → Send receipt
+  → Exit
 ```
 
-#### 2.2.2 权限校验器 (Auth Guard)
+#### 2.2.2 Auth Guard
 
-**职责**：验证邮件发送者是否在授权白名单中，阻止未授权访问。
+**Responsibility**: Verify the sender is on the authorized allowlist and block unauthorized access.
 
-**校验规则**：
-1. **发件人白名单**：维护一份允许的邮箱地址列表（支持通配符，如 `*@company.com`）
-2. **可选：密钥验证**：邮件主题行可包含预共享密钥，作为二次认证
-3. **SPF/DKIM 头检查**：验证邮件头中的认证结果，防止发件人伪造
+**Validation rules**:
+1. **Sender allowlist**: Maintain a list of permitted addresses (wildcards supported, e.g. `*@company.com`)
+2. **Optional: secret in subject**: A pre-shared key in the subject line for secondary authentication
+3. **SPF/DKIM header checks**: Validate authentication results in headers to reduce sender spoofing
 
-**配置示例**：
+**Configuration example**:
 ```yaml
 auth:
   allowed_senders:
@@ -89,135 +89,135 @@ auth:
   check_spf_dkim: true
 ```
 
-#### 2.2.3 链接处理器 (Link Processor)
+#### 2.2.3 Link Processor
 
-**职责**：从邮件正文（纯文本和 HTML）中提取视频平台链接。
+**Responsibility**: Extract video-platform links from the message body (plain text and HTML).
 
-**支持的平台与 URL 模式**：
+**Supported platforms and URL patterns**:
 
-| 平台 | URL 模式 |
-|------|----------|
+| Platform | URL patterns |
+|----------|--------------|
 | YouTube | `youtube.com/watch?v=`, `youtu.be/`, `youtube.com/shorts/` |
 | Bilibili | `bilibili.com/video/BV`, `b23.tv/` |
 | Vimeo | `vimeo.com/` |
 | TED | `ted.com/talks/` |
-| 通用网页 | 任何 `http(s)://` 链接（可配置是否启用） |
+| Generic web | Any `http(s)://` link (enable/disable via config) |
 
-**提取策略**：
-1. 解析邮件的 `text/plain` 和 `text/html` 两种格式
-2. 使用正则表达式匹配已知平台的 URL 模式
-3. 展开短链接（如 `youtu.be`、`b23.tv`）获取完整 URL
-4. 去重：基于标准化后的 URL 去除重复项
-5. 对每个链接附加元数据：来源邮件 ID、提取时间、平台类型
+**Extraction strategy**:
+1. Parse both `text/plain` and `text/html` parts
+2. Match known platform URL patterns with regular expressions
+3. Expand short links (e.g. `youtu.be`, `b23.tv`) to full URLs
+4. Deduplicate using normalized URLs
+5. Attach metadata per link: source message ID, extraction time, platform type
 
-#### 2.2.4 链接验证器 (Link Validator)
+#### 2.2.4 Link Validator
 
-**职责**：验证提取到的链接是否有效且可访问。
+**Responsibility**: Verify extracted links are valid and reachable.
 
-**验证层级**：
+**Validation layers**:
 
 ```
-第一层：格式验证
-  └─ URL 是否符合标准格式（RFC 3986）
-  └─ 域名是否属于已知视频平台
+Layer 1: Format validation
+  └─ URL conforms to standard format (RFC 3986)
+  └─ Domain belongs to a known video platform
 
-第二层：可达性验证
-  └─ 发送 HTTP HEAD 请求检查状态码
-  └─ 超时阈值：10 秒
-  └─ 重试次数：最多 2 次
+Layer 2: Reachability validation
+  └─ HTTP HEAD request and status code check
+  └─ Timeout threshold: 10 seconds
+  └─ Retries: up to 2
 
-第三层：内容验证（可选）
-  └─ YouTube：通过 oEmbed API 确认视频存在且公开
-  └─ Bilibili：通过 API 检查视频状态
+Layer 3: Content validation (optional)
+  └─ YouTube: oEmbed API to confirm video exists and is public
+  └─ Bilibili: API check for video status
 ```
 
-**验证结果分类**：
-- `VALID`：链接有效，可以提交
-- `INVALID_FORMAT`：URL 格式错误
-- `UNREACHABLE`：目标不可达（404、超时等）
-- `RESTRICTED`：视频存在但受限（私有、地区限制）
-- `UNSUPPORTED`：不支持的平台或内容类型
+**Validation result categories**:
+- `VALID`: Link is valid and can be submitted
+- `INVALID_FORMAT`: Malformed URL
+- `UNREACHABLE`: Target not reachable (404, timeout, etc.)
+- `RESTRICTED`: Video exists but restricted (private, region-locked)
+- `UNSUPPORTED`: Unsupported platform or content type
 
-#### 2.2.5 NotebookLM 写入器 (NotebookLM Writer)
+#### 2.2.5 NotebookLM Writer
 
-**职责**：将验证通过的链接写入 NotebookLM 作为数据源。
+**Responsibility**: Write validated links into NotebookLM as data sources.
 
-**集成方案（详见第 3 节技术选型）**：
+**Integration options (see Section 3 for technology choices)**:
 
-提供两种互备的集成路径：
+Two mutually backup integration paths:
 
-| 方案 | 适用场景 | 优势 | 限制 |
-|------|---------|------|------|
-| **方案 A: NotebookLM Enterprise API** | 拥有 Google Workspace Enterprise 许可 | 官方支持、稳定、有 SLA | 需要 Enterprise 许可，仅支持 YouTube（不支持 Bilibili） |
-| **方案 B: notebooklm-py** | 个人用户或无 Enterprise 许可 | 免费、支持所有源类型、功能更丰富 | 非官方 API，可能随时失效 |
+| Option | Use case | Pros | Cons |
+|--------|----------|------|------|
+| **Option A: NotebookLM Enterprise API** | Google Workspace Enterprise license | Official, stable, SLA | Requires Enterprise license; YouTube-only for `videoContent` (not Bilibili) |
+| **Option B: notebooklm-py** | Individuals or no Enterprise license | Free, broader source types, richer features | Unofficial API; may break without notice |
 
-**写入流程**：
+**Write flow**:
 ```
-接收验证通过的链接列表
+Receive list of validated links
   ↓
-按目标 Notebook 分组
+Group by target Notebook
   ↓
-检查 Notebook 是否存在（不存在则创建）
+Ensure Notebook exists (create if missing)
   ↓
-调用 batchCreate API 批量添加源
+Call batchCreate API to add sources in bulk
   ↓
-记录每个源的 sourceId 和处理状态
+Record each source’s sourceId and processing state
   ↓
-更新本地数据库中的链接状态
+Update link status in local database
 ```
 
 ---
 
-## 3. 技术选型
+## 3. Technology Stack
 
-### 3.1 编程语言
+### 3.1 Programming Language
 
-**选择：Python 3.11+**
+**Choice: Python 3.11+**
 
-理由：
-- `notebooklm-py` 是 Python 编写的，可直接 `import` 集成——选择 Go/Rust 则需要多语言混合架构
-- 项目是 I/O 密集型（99% 时间在等待 IMAP/HTTP 响应），Python asyncio 与 Go/Rust 在实际延迟上无可测量差异
-- `imaplib` 是标准库，`IMAPClient`、`BeautifulSoup` 等邮件/HTML 处理库成熟度领先
-- NotebookLM 自动化社区几乎全部使用 Python，参考方案丰富
+Rationale:
+- `notebooklm-py` is Python; direct `import` integration—Go/Rust would imply a polyglot setup
+- Workload is I/O-bound (~99% time waiting on IMAP/HTTP); Python asyncio shows no meaningful latency gap vs Go/Rust here
+- `imaplib` is in the stdlib; `IMAPClient`, `BeautifulSoup`, and similar mail/HTML stacks are mature
+- NotebookLM automation community is largely Python, with ample reference material
 
-> 完整的 Python vs Go vs Rust 对比分析见 [docs/technical-analysis.md](technical-analysis.md#第一部分后端语言选型--python-vs-go-vs-rust)
+> For the full Python vs Go vs Rust comparison, see [docs/technical-analysis.md](technical-analysis.md).
 
-### 3.2 核心依赖
+### 3.2 Core Dependencies
 
 ```
-# 邮件处理
-IMAPClient>=3.0          # IMAP 协议高级封装，支持 IDLE
-mailsuite>=1.11          # IMAP 简化客户端，内置重连机制（备选）
+# Email
+IMAPClient>=3.0          # Higher-level IMAP; IDLE support
+mailsuite>=1.11          # Simpler IMAP client with reconnect (alternative)
 
-# NotebookLM 集成
-notebooklm-py>=0.3.4     # 非官方 Python API（方案 B）
-google-auth>=2.0         # Google Cloud 认证（方案 A）
-httpx>=0.27              # 异步 HTTP 客户端
+# NotebookLM
+notebooklm-py>=0.3.4     # Unofficial Python API (Option B)
+google-auth>=2.0         # Google Cloud auth (Option A)
+httpx>=0.27              # Async HTTP client
 
-# 链接处理
-validators>=0.22         # URL 格式验证
-beautifulsoup4>=4.12     # HTML 邮件解析
+# Links
+validators>=0.22         # URL format validation
+beautifulsoup4>=4.12     # HTML message parsing
 
-# 数据存储
-sqlalchemy>=2.0          # ORM（如选用 SQLite）
-pydantic>=2.0            # 数据模型与配置校验
+# Storage
+sqlalchemy>=2.0          # ORM (if using SQLite)
+pydantic>=2.0            # Models and config validation
 
-# 运维
-structlog>=24.0          # 结构化日志
-schedule>=1.2            # 轻量级任务调度（备选）
-pyyaml>=6.0              # 配置文件解析
+# Operations
+structlog>=24.0          # Structured logging
+schedule>=1.2            # Lightweight scheduling (alternative)
+pyyaml>=6.0              # Config file parsing
 ```
 
-### 3.3 NotebookLM 集成方案详述
+### 3.3 NotebookLM Integration Details
 
-#### 方案 A：NotebookLM Enterprise API（推荐生产环境）
+#### Option A: NotebookLM Enterprise API (recommended for production)
 
-**前提条件**：
-- Google Cloud 项目已启用 Discovery Engine API
-- 拥有 NotebookLM Enterprise 许可
-- 已配置 Service Account 或 OAuth 2.0 凭据
+**Prerequisites**:
+- Discovery Engine API enabled on the Google Cloud project
+- NotebookLM Enterprise entitlement
+- Service Account or OAuth 2.0 credentials configured
 
-**API 调用示例**：
+**Example API call**:
 ```
 POST https://us-discoveryengine.googleapis.com/v1alpha/
      projects/{PROJECT}/locations/{LOCATION}/
@@ -234,54 +234,54 @@ Body:
     {
       "webContent": {
         "url": "https://bilibili.com/video/BVxxx",
-        "sourceName": "Bilibili - 视频标题"
+        "sourceName": "Bilibili - Video title"
       }
     }
   ]
 }
 ```
 
-**注意**：Enterprise API 的 `videoContent` 仅支持 YouTube。Bilibili 等非 YouTube 平台的视频链接需使用 `webContent` 类型提交，NotebookLM 会尝试抓取页面内容。
+**Note**: Enterprise API `videoContent` supports YouTube only. Non-YouTube video URLs (e.g. Bilibili) should use `webContent`; NotebookLM will try to fetch page content.
 
-#### 方案 B：notebooklm-py（推荐个人用户）
+#### Option B: notebooklm-py (recommended for individuals)
 
-**认证方式**：
-- 首次使用需通过浏览器登录 Google 账号
-- 认证状态持久化存储在 `~/.notebooklm/storage_state.json`
-- 支持通过 `NOTEBOOKLM_AUTH_JSON` 环境变量在 CI/CD 中使用
+**Authentication**:
+- First use requires browser login to a Google account
+- Auth state persisted in `~/.notebooklm/storage_state.json`
+- `NOTEBOOKLM_AUTH_JSON` env var supported for CI/CD
 
-**功能优势**：
-- 支持所有 NotebookLM 支持的源类型
-- 可生成音频概述、视频概述、思维导图等
-- 支持 CLI 和 Python API 两种使用方式
-- 内置 Web/Drive 研究代理
+**Strengths**:
+- Supports all source types NotebookLM supports
+- Can generate audio overviews, video overviews, mind maps, etc.
+- CLI and Python API
+- Built-in Web/Drive research agents
 
-**风险**：
-- 使用未公开的 Google API，可能随时失效
-- 不受 Google 官方支持
+**Risks**:
+- Uses undocumented Google internals; may break anytime
+- Not officially supported by Google
 
-### 3.4 邮件服务兼容性
+### 3.4 Email Provider Compatibility
 
-| 邮件服务商 | IMAP 支持 | IDLE 支持 | 注意事项 |
-|-----------|----------|----------|---------|
-| Gmail | 是 | 是 | 需启用应用专用密码或 OAuth 2.0 |
-| Outlook/365 | 是 | 是 | 推荐使用 OAuth 2.0 (Microsoft Graph) |
-| 自建邮件服务器 | 是 | 视配置 | 确保开启 IMAP IDLE 扩展 |
-| QQ 邮箱 | 是 | 部分 | 需开启 IMAP 服务并获取授权码 |
-| 163 邮箱 | 是 | 部分 | 需开启 IMAP 服务并获取授权码 |
+| Provider | IMAP | IDLE | Notes |
+|----------|------|------|-------|
+| Gmail | Yes | Yes | App password or OAuth 2.0 required |
+| Outlook/365 | Yes | Yes | OAuth 2.0 (Microsoft Graph) recommended |
+| Self-hosted | Yes | Depends on config | Ensure IMAP IDLE extension enabled |
+| QQ Mail | Yes | Partial | Enable IMAP and use authorization code |
+| 163 Mail | Yes | Partial | Enable IMAP and use authorization code |
 
 ---
 
-## 4. 数据模型
+## 4. Data Model
 
-### 4.1 核心实体
+### 4.1 Core Entities
 
 ```
 ┌──────────────────────────────────┐
 │         ProcessedEmail           │
 ├──────────────────────────────────┤
 │ id: UUID (PK)                    │
-│ message_id: str (邮件 Message-ID)│
+│ message_id: str (Message-ID)     │
 │ sender: str                      │
 │ subject: str                     │
 │ received_at: datetime            │
@@ -318,12 +318,12 @@ Body:
 │ notebook_name: str               │
 │ category: str                    │
 │ source_count: int                │
-│ max_sources: int (默认 300)      │
+│ max_sources: int (default 300)   │
 │ created_at: datetime             │
 └──────────────────────────────────┘
 ```
 
-### 4.2 枚举定义
+### 4.2 Enum Definitions
 
 ```python
 class EmailStatus(str, Enum):
@@ -355,137 +355,137 @@ class SubmitStatus(str, Enum):
     FAILED = "failed"
 ```
 
-### 4.3 存储选择
+### 4.3 Storage Choice
 
-**推荐：SQLite**
+**Recommended: SQLite**
 
-理由：
-- 单进程场景下性能足够
-- 无需额外部署数据库服务
-- 数据文件可随项目迁移
-- 通过 SQLAlchemy 可在需要时轻松迁移到 PostgreSQL
+Rationale:
+- Sufficient performance for single-process use
+- No separate database server
+- Data file travels with the project
+- SQLAlchemy eases migration to PostgreSQL if needed
 
-**替代方案：JSON 文件存储**
-- 适合极简部署场景
-- 使用 `TinyDB` 或自定义 JSON 文件管理
-- 不推荐在数据量 > 1000 条时使用
+**Alternative: JSON files**
+- Minimal deployments
+- `TinyDB` or custom JSON layout
+- Not recommended beyond ~1000 records
 
 ---
 
-## 5. 数据流处理流程
+## 5. Data Flow
 
-### 5.1 主流程
+### 5.1 Main Pipeline
 
 ```
-    [用户发送邮件]
+    [User sends email]
          │
          ▼
   ┌──────────────┐
-  │ 1. 邮件到达  │ ◄── GitHub Actions Cron 触发 IMAP 轮询
-  │    收件箱    │
+  │ 1. Message   │ ◄── GitHub Actions Cron triggers IMAP poll
+  │    arrives   │
   └──────┬───────┘
          │
          ▼
   ┌──────────────┐     ┌──────────────┐
-  │ 2. 权限校验  │────►│ 拒绝并记录日志│ (未授权发件人)
-  │              │ NO  │ 发送拒绝回执  │
+  │ 2. Auth      │────►│ Reject + log │ (unauthorized sender)
+  │    check     │ NO  │ Send reject  │
   └──────┬───────┘     └──────────────┘
          │ YES
          ▼
   ┌──────────────┐
-  │ 3. 解析邮件  │ ◄── 解析 text/plain + text/html
-  │    提取链接  │
+  │ 3. Parse &   │ ◄── Parse text/plain + text/html
+  │    extract   │
   └──────┬───────┘
          │
          ▼
   ┌──────────────┐     ┌──────────────┐
-  │ 4. 验证链接  │────►│ 标记为无效    │ (格式错误/不可达)
-  │              │ ✗   │ 记录错误详情  │
+  │ 4. Validate  │────►│ Mark invalid │ (bad format / unreachable)
+  │    links     │ ✗   │ Log details  │
   └──────┬───────┘     └──────────────┘
          │ ✓
          ▼
   ┌──────────────┐
-  │ 5. 分类归组  │ ◄── 按平台/主题/日期分类
-  │              │
+  │ 5. Classify  │ ◄── By platform / topic / date
+  │    & group   │
   └──────┬───────┘
          │
          ▼
   ┌──────────────┐
-  │ 6. 写入      │ ◄── NotebookLM API batchCreate
+  │ 6. Write to  │ ◄── NotebookLM API batchCreate
   │  NotebookLM  │
   └──────┬───────┘
          │
          ▼
   ┌──────────────┐
-  │ 7. 发送确认  │ ◄── 回复原邮件，附处理结果摘要
-  │    回执邮件  │
+  │ 7. Send      │ ◄── Reply with processing summary
+  │    receipt   │
   └──────────────┘
 ```
 
-### 5.2 分类策略
+### 5.2 Classification Strategy
 
-链接按以下优先级分类，决定写入哪个 Notebook：
+Links are classified in the following priority order to choose the target Notebook:
 
-1. **按邮件主题行**（优先级最高）：
-   - 主题行格式：`[分类名] 其他内容`
-   - 示例：`[机器学习] 最新的 Transformer 教程` → 写入名为"机器学习"的 Notebook
-   
-2. **AI 辅助分类**（可选，Phase 2）：
-   - 当用户未在主题行指定标签且启用 AI 分类时，调用 LLM 分析视频标题/描述进行自动归类
-   - 置信度低于阈值时自动回退到下一级策略
-   - 回执邮件中明确标注分类来源（用户指定 / AI 建议 / 回退策略）
-   
-3. **按平台自动分类**：
-   - YouTube 视频 → `YouTube Videos` Notebook
-   - Bilibili 视频 → `Bilibili Videos` Notebook
-   
-4. **按日期聚合**（默认兜底）：
-   - 无明确分类时，按 `YYYY-MM` 格式归入月度 Notebook
-   - 示例：`2026-03 视频收藏`
+1. **Subject line** (highest priority):
+   - Format: `[Category name] other text`
+   - Example: `[Machine Learning] Latest Transformer tutorial` → Notebook named "Machine Learning"
 
-5. **Notebook 容量管理**：
-   - NotebookLM 单个 Notebook 的源数量上限为 300
-   - 当 Notebook 接近上限时，自动创建新的分卷 Notebook（如 `机器学习 (2)`）
+2. **AI-assisted classification** (optional, Phase 2):
+   - When the user does not specify a tag in the subject and AI classification is enabled, call an LLM on title/description to auto-assign category
+   - If confidence is below threshold, fall back to the next strategy
+   - Receipt email states classification source (user / AI suggestion / fallback)
 
-> AI 分类的详细技术分析与设计方案见 [docs/technical-analysis.md](technical-analysis.md#第二部分邮件分类策略--用户指定-vs-ai-自动归类)
+3. **Platform-based routing**:
+   - YouTube → `YouTube Videos` Notebook
+   - Bilibili → `Bilibili Videos` Notebook
 
-### 5.3 确认回执邮件格式
+4. **Monthly aggregation** (default fallback):
+   - When no explicit category, use `YYYY-MM` monthly Notebook
+   - Example: `2026-03 Video collection`
 
-处理完成后，系统自动回复发件人一封确认邮件：
+5. **Notebook capacity**:
+   - NotebookLM caps sources per Notebook at 300
+   - When near the limit, auto-create a sequel Notebook (e.g. `Machine Learning (2)`)
+
+> For AI classification design details, see [docs/technical-analysis.md](technical-analysis.md).
+
+### 5.3 Confirmation Receipt Format
+
+After processing, the system replies to the sender with a confirmation message:
 
 ```
-主题: Re: [机器学习] 最新的 Transformer 教程
+Subject: Re: [Machine Learning] Latest Transformer tutorial
 
-处理完成！以下是本次处理结果：
+Processing complete. Summary:
 
-✅ 成功添加 (3 条)：
+✅ Successfully added (3):
   1. [YouTube] https://youtube.com/watch?v=abc123
-     → Notebook: 机器学习 | Source ID: src_001
+     → Notebook: Machine Learning | Source ID: src_001
   2. [YouTube] https://youtube.com/watch?v=def456
-     → Notebook: 机器学习 | Source ID: src_002
+     → Notebook: Machine Learning | Source ID: src_002
   3. [Bilibili] https://bilibili.com/video/BV1xx...
-     → Notebook: 机器学习 | Source ID: src_003
+     → Notebook: Machine Learning | Source ID: src_003
 
-❌ 处理失败 (1 条)：
+❌ Failed (1):
   4. https://example.com/broken-link
-     → 原因：HTTP 404 - 页面不存在
+     → Reason: HTTP 404 - page not found
 
-📊 统计：
-  - 总链接数：4
-  - 成功：3 | 失败：1
-  - 目标 Notebook：机器学习 (当前 45/300 源)
+📊 Stats:
+  - Total links: 4
+  - Success: 3 | Failed: 1
+  - Target Notebook: Machine Learning (currently 45/300 sources)
 ```
 
 ---
 
-## 6. 配置管理
+## 6. Configuration
 
-### 6.1 配置文件结构
+### 6.1 Configuration File Layout
 
-使用 YAML 格式的配置文件 `config.yaml`：
+YAML configuration in `config.yaml`:
 
 ```yaml
-# 邮件服务器配置
+# Mail server
 email:
   imap:
     host: "imap.gmail.com"
@@ -496,15 +496,15 @@ email:
     port: 587
     use_tls: true
   credentials:
-    username: "${EMAIL_USERNAME}"      # 从环境变量读取
-    password: "${EMAIL_PASSWORD}"      # 从环境变量读取
+    username: "${EMAIL_USERNAME}"      # from environment
+    password: "${EMAIL_PASSWORD}"      # from environment
   monitoring:
     folder: "INBOX"
-    idle_timeout: 600                  # IDLE 续期间隔（秒）
+    idle_timeout: 600                  # IDLE keepalive interval (seconds)
     reconnect_max_retries: 5
-    reconnect_backoff_base: 2          # 指数退避基数（秒）
+    reconnect_backoff_base: 2          # exponential backoff base (seconds)
 
-# 权限控制
+# Access control
 auth:
   allowed_senders:
     - "myemail@gmail.com"
@@ -513,23 +513,23 @@ auth:
   subject_key: "${AUTH_SUBJECT_KEY}"
   check_spf_dkim: true
 
-# 链接处理
+# Link processing
 link_processing:
   supported_platforms:
     - youtube
     - bilibili
     - vimeo
     - ted
-  allow_generic_urls: false            # 是否允许非视频平台链接
+  allow_generic_urls: false            # allow non-video generic URLs
   validation:
-    timeout: 10                        # HTTP 请求超时（秒）
+    timeout: 10                        # HTTP timeout (seconds)
     max_retries: 2
     verify_ssl: true
-  short_url_expand: true               # 是否展开短链接
+  short_url_expand: true               # expand short URLs
 
-# NotebookLM 配置
+# NotebookLM
 notebooklm:
-  integration: "enterprise_api"        # "enterprise_api" 或 "notebooklm_py"
+  integration: "enterprise_api"        # "enterprise_api" or "notebooklm_py"
 
   enterprise_api:
     project_number: "${GCP_PROJECT_NUMBER}"
@@ -542,249 +542,249 @@ notebooklm:
     home_dir: "~/.notebooklm"
 
   notebook:
-    default_category: "monthly"        # 默认分类策略
-    max_sources_per_notebook: 280      # 留出余量
-    auto_create: true                  # 自动创建不存在的 Notebook
+    default_category: "monthly"        # default classification strategy
+    max_sources_per_notebook: 280      # headroom below hard cap
+    auto_create: true                  # auto-create missing Notebooks
 
-# 分类配置
+# Classification
 classification:
   strategy: "user_specified"           # "user_specified" | "ai_assisted" | "hybrid"
   ai:
-    enabled: false                     # Phase 2 可选功能
+    enabled: false                     # optional Phase 2
     provider: "gemini"                 # "gemini" | "openai" | "local"
-    confidence_threshold: 0.80         # AI 分类置信度阈值
-    fallback: "platform"              # AI 置信度不足时的回退策略
+    confidence_threshold: 0.80         # AI confidence threshold
+    fallback: "platform"              # fallback when AI confidence is low
 
-# 存储配置
+# Storage
 storage:
-  type: "sqlite"                       # "sqlite" 或 "json"
+  type: "sqlite"                       # "sqlite" or "json"
   sqlite:
     database: "data/mail_to_notebooklm.db"
   json:
     directory: "data/json_store"
 
-# 日志配置
+# Logging
 logging:
   level: "INFO"
-  format: "json"                       # "json" 或 "text"
+  format: "json"                       # "json" or "text"
   file: "logs/service.log"
   max_size_mb: 50
   backup_count: 5
 
-# 通知配置（可选）
+# Notifications (optional)
 notifications:
-  send_reply: true                     # 是否发送处理结果回执
-  send_error_alert: true               # 处理失败时是否发送告警
+  send_reply: true                     # send processing receipt
+  send_error_alert: true               # alert on processing failure
   error_alert_email: "admin@example.com"
 ```
 
-### 6.2 环境变量
+### 6.2 Environment Variables
 
-所有敏感信息通过环境变量注入，不存储在配置文件中：
+Secrets are injected via environment variables, not stored in config files:
 
-| 变量名 | 用途 | 必须 |
-|--------|------|------|
-| `EMAIL_USERNAME` | 邮箱账户用户名 | 是 |
-| `EMAIL_PASSWORD` | 邮箱账户密码/应用专用密码 | 是 |
-| `AUTH_SUBJECT_KEY` | 邮件主题行密钥（如启用） | 否 |
-| `GCP_PROJECT_NUMBER` | Google Cloud 项目编号 | 方案 A |
-| `GOOGLE_APPLICATION_CREDENTIALS` | GCP 服务账号密钥文件路径 | 方案 A |
-| `NOTEBOOKLM_AUTH_JSON` | notebooklm-py 认证 JSON | 方案 B |
+| Variable | Purpose | Required |
+|----------|---------|----------|
+| `EMAIL_USERNAME` | Mailbox username | Yes |
+| `EMAIL_PASSWORD` | Mailbox password / app password | Yes |
+| `AUTH_SUBJECT_KEY` | Subject-line secret (if enabled) | No |
+| `GCP_PROJECT_NUMBER` | Google Cloud project number | Option A |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP service account key | Option A |
+| `NOTEBOOKLM_AUTH_JSON` | notebooklm-py auth JSON | Option B |
 
 ---
 
-## 7. 错误处理与恢复
+## 7. Error Handling and Recovery
 
-### 7.1 错误分类
+### 7.1 Error Taxonomy
 
 ```
 ┌──────────────────────────────────────────────────┐
-│                   错误分类体系                    │
+│              Error taxonomy                      │
 ├────────────────┬─────────────────────────────────┤
-│ 类别           │ 处理策略                         │
+│ Category       │ Handling                         │
 ├────────────────┼─────────────────────────────────┤
-│ 临时性错误     │                                  │
-│ ├ 网络超时     │ 指数退避重试（最多 3 次）          │
-│ ├ IMAP 断连    │ 自动重连（最多 5 次）              │
-│ └ API 限流     │ 遵循 Retry-After 头等待后重试      │
+│ Transient      │                                  │
+│ ├ Network T/O  │ Exponential backoff (max 3)      │
+│ ├ IMAP drop    │ Auto-reconnect (max 5)           │
+│ └ API throttle │ Honor Retry-After, then retry    │
 ├────────────────┼─────────────────────────────────┤
-│ 永久性错误     │                                  │
-│ ├ 认证失败     │ 记录日志 + 告警管理员              │
-│ ├ 链接无效     │ 标记状态 + 写入错误日志            │
-│ └ API 不可用   │ 切换备用方案 / 记录日志 + 告警     │
+│ Permanent      │                                  │
+│ ├ Auth failure │ Log + alert admins               │
+│ ├ Bad link     │ Set state + error log            │
+│ └ API down     │ Failover path / log + alert      │
 ├────────────────┼─────────────────────────────────┤
-│ 业务错误       │                                  │
-│ ├ 未授权发件人 │ 丢弃 + 记录（不回复）              │
-│ ├ 无链接邮件   │ 忽略 + 记录                       │
-│ └ Notebook 满  │ 自动创建分卷 Notebook              │
+│ Business       │                                  │
+│ ├ Unauthorized │ Drop + log (no reply)            │
+│ ├ No links     │ Ignore + log                     │
+│ └ Notebook full│ Auto-create sequel Notebook      │
 └────────────────┴─────────────────────────────────┘
 ```
 
-### 7.2 幂等性保证
+### 7.2 Idempotency
 
-- 每封邮件通过 `Message-ID` 头去重，防止重复处理
-- 每个链接通过标准化 URL 去重，防止同一视频被多次添加
-- 处理状态持久化到数据库，服务重启后可从断点恢复
+- Deduplicate by `Message-ID` header to avoid reprocessing the same mail
+- Deduplicate links by normalized URL to avoid duplicate adds
+- Persist processing state so runs can resume after restart
 
-### 7.3 死信队列
+### 7.3 Dead Letter Queue
 
-处理失败超过最大重试次数的链接进入"死信"状态：
-- 记录完整的错误上下文（邮件 ID、链接、错误信息、尝试次数）
-- 支持手动重试或批量重新处理
-- 定期（每日）生成死信报告发送给管理员
+Links that fail after max retries enter a dead-letter state:
+- Store full context (message ID, URL, error, attempt count)
+- Support manual retry or batch reprocessing
+- Daily dead-letter report to admins
 
 ---
 
-## 8. 安全设计
+## 8. Security Design
 
-### 8.1 认证与授权
+### 8.1 Authentication and Authorization
 
 ```
 ┌──────────────────────────────────────────┐
-│            多层安全防护                   │
+│        Layered security controls         │
 ├──────────┬───────────────────────────────┤
-│ 第一层   │ 发件人白名单过滤              │
-│          │ - 精确匹配或通配符模式        │
-│          │ - 拒绝不在白名单中的发件人    │
+│ Layer 1  │ Sender allowlist              │
+│          │ - Exact or wildcard match     │
+│          │ - Reject non-allowlisted      │
 ├──────────┼───────────────────────────────┤
-│ 第二层   │ 邮件头验证                    │
-│          │ - 检查 SPF 认证结果           │
-│          │ - 检查 DKIM 签名             │
-│          │ - 防止邮件地址伪造            │
+│ Layer 2  │ Header validation             │
+│          │ - SPF result                  │
+│          │ - DKIM signature              │
+│          │ - Reduce address spoofing     │
 ├──────────┼───────────────────────────────┤
-│ 第三层   │ 主题密钥（可选）              │
-│          │ - 邮件主题行包含预共享密钥    │
-│          │ - 增加一层应用层认证          │
+│ Layer 3  │ Subject secret (optional)     │
+│          │ - Pre-shared key in subject   │
+│          │ - Extra app-layer auth        │
 ├──────────┼───────────────────────────────┤
-│ 第四层   │ 速率限制                      │
-│          │ - 每个发件人每小时最多 N 封    │
-│          │ - 防止滥用和 DoS              │
+│ Layer 4  │ Rate limiting                 │
+│          │ - Max N messages/hour/sender  │
+│          │ - Abuse / DoS mitigation      │
 └──────────┴───────────────────────────────┘
 ```
 
-### 8.2 数据安全
+### 8.2 Data Security
 
-- **传输安全**：IMAP/SMTP 强制 SSL/TLS；NotebookLM API 使用 HTTPS
-- **凭据管理**：所有密钥通过环境变量注入，不硬编码
-- **本地存储**：SQLite 数据库文件权限设为 `0600`（仅属主可读写）
-- **日志脱敏**：日志中不记录完整邮箱地址和密钥内容
+- **In transit**: IMAP/SMTP over SSL/TLS; NotebookLM API over HTTPS
+- **Secrets**: Keys via environment variables only; no hardcoding
+- **Local storage**: SQLite file mode `0600` (owner read/write only)
+- **Log redaction**: Do not log full addresses or secret values
 
-### 8.3 URL 安全
+### 8.3 URL Safety
 
-- 验证 URL scheme 仅允许 `http` 和 `https`
-- 禁止处理指向私有 IP 段的链接（防 SSRF）
-- 对展开后的短链接重新验证目标域名
+- Allow only `http` and `https` schemes
+- Block private-IP targets (SSRF mitigation)
+- Re-validate destination host after short-link expansion
 
 ---
 
-## 9. 项目结构
+## 9. Project Layout
 
 ```
-mail-to-notebookllm/
+mail-to-notebooklm/
 ├── .github/
 │   └── workflows/
-│       └── poll-email.yml       # GitHub Actions 定时工作流
+│       └── poll-email.yml       # GitHub Actions scheduled workflow
 ├── config/
-│   └── config.example.yaml      # 配置文件模板
+│   └── config.example.yaml      # Config template
 ├── src/
 │   ├── __init__.py
-│   ├── main.py                  # 入口点（单次运行模式）
-│   ├── config.py                # 配置加载与校验
-│   ├── logger.py                # 日志脱敏
-│   ├── email_client.py          # IMAP 收取 + SMTP 回复
-│   ├── auth_guard.py            # 权限校验器
-│   ├── link_processor.py        # 链接提取与处理
-│   ├── link_validator.py        # 链接验证器
-│   ├── notebooklm_writer.py     # NotebookLM 写入器
-│   ├── notification.py          # 回执邮件构建
-│   └── models.py                # 数据模型
+│   ├── main.py                  # Entry (single-run mode)
+│   ├── config.py                # Load & validate config
+│   ├── logger.py                # Log redaction
+│   ├── email_client.py          # IMAP fetch + SMTP reply
+│   ├── auth_guard.py            # Auth guard
+│   ├── link_processor.py        # Link extraction & handling
+│   ├── link_validator.py        # Link validation
+│   ├── notebooklm_writer.py     # NotebookLM writer
+│   ├── notification.py          # Receipt email builder
+│   └── models.py                # Data models
 ├── tests/
 │   ├── __init__.py
 │   ├── test_auth_guard.py
 │   ├── test_link_processor.py
 │   └── test_logger.py
 ├── docs/
-│   ├── system-design.md         # 本文档
-│   └── technical-analysis.md    # 技术选型与 AI 分类分析
-├── .env.example                 # 环境变量模板
+│   ├── system-design.md         # This document
+│   └── technical-analysis.md    # Stack & AI classification analysis
+├── .env.example                 # Environment template
 ├── .gitignore
-├── requirements.txt             # Python 依赖
+├── requirements.txt             # Python dependencies
 └── README.md
 ```
 
 ---
 
-## 10. 部署方案
+## 10. Deployment
 
-### 10.1 方案对比
+### 10.1 Option Comparison
 
-| 部署方式 | 适用场景 | 成本 | 运维复杂度 |
-|---------|---------|------|-----------|
-| **GitHub Actions（推荐）** | 个人长期使用 | 免费 | 极低 |
-| **Oracle Cloud 免费 VPS** | 需要实时处理 | 免费 | 低 |
-| **VPS / 云主机** | 大量邮件处理 | ~$5/月 | 中 |
-| **Cloudflare Email Workers** | 有自有域名 | 免费 | 低 |
-| **本地运行** | 开发调试 | 无 | 低 |
+| Deployment | Use case | Cost | Ops effort |
+|------------|----------|------|------------|
+| **GitHub Actions (recommended)** | Long-term personal use | Free | Very low |
+| **Oracle Cloud free VPS** | Near-real-time processing | Free | Low |
+| **VPS / cloud VM** | High mail volume | ~$5/mo | Medium |
+| **Cloudflare Email Workers** | Own domain | Free | Low |
+| **Local** | Dev/debug | None | Low |
 
-### 10.2 推荐部署：GitHub Actions
+### 10.2 Recommended: GitHub Actions
 
-采用 GitHub Actions 的 Cron 定时触发，每 10 分钟轮询一次收件箱。
+Use GitHub Actions Cron to poll the inbox every 10 minutes.
 
-**架构模式**：
+**Pattern**:
 ```
-每 10 分钟 → GitHub Actions 启动 → 连接 IMAP → 获取未读邮件
-  → 处理链接 → 提交 NotebookLM → 发送回执 → 标记已读 → 退出
+Every 10 min → GitHub Actions starts → IMAP connect → fetch unread
+  → process links → submit to NotebookLM → send receipt → mark read → exit
 ```
 
-**优势**：
-- 完全免费（公开仓库无分钟限制）
-- 零服务器运维
-- 密钥通过 GitHub Secrets 安全管理
-- 内置日志脱敏，公开仓库不泄露隐私
-- 自带执行历史和失败告警
+**Benefits**:
+- Free for public repos (no minute cap concern for this pattern)
+- No server to operate
+- Secrets in GitHub Secrets
+- Log redaction for public repos
+- Built-in run history and failure signals
 
-**工作流配置** (`.github/workflows/poll-email.yml`)：
-- 触发方式：`schedule (cron: '*/10 * * * *')` + 手动触发
-- 运行环境：`ubuntu-latest` + Python 3.11
-- 状态管理：依赖 IMAP SEEN 标记去重，无需外部数据库
+**Workflow** (`.github/workflows/poll-email.yml`):
+- Triggers: `schedule (cron: '*/10 * * * *')` + manual
+- Runner: `ubuntu-latest`, Python 3.11
+- State: IMAP SEEN for dedupe; no external DB required for basic mode
 
-**隐私保护**：
-- GitHub 自动遮蔽已注册 Secrets 的值
-- 日志层面额外对邮箱地址和 URL 做脱敏处理
-- 日志中只输出统计信息，不输出具体链接内容
+**Privacy**:
+- GitHub masks registered Secret values in logs
+- Additional redaction for addresses and URLs in logs
+- Prefer aggregates in logs over raw link dumps
 
-### 10.3 备选部署方案
+### 10.3 Alternate Deployments
 
-**Oracle Cloud 永久免费 VPS**：如需 IMAP IDLE 实时监控（而非 10 分钟轮询），可使用 Oracle Cloud 的永久免费 ARM 实例（4 核 / 24 GB），在亚太区域部署常驻 Python 进程。
+**Oracle Cloud Always Free VPS**: For IMAP IDLE instead of 10-minute polling, use an Always Free ARM instance (4 vCPU / 24 GB) in an APAC region with a long-running Python process.
 
-**Cloudflare Email Workers**：如有自有域名，可配置 Cloudflare Email Routing 将邮件事件直接推送给 Worker 处理，实现零延迟的事件驱动架构（需使用 TypeScript 重写）。
+**Cloudflare Email Workers**: With your own domain, Email Routing can push events to a Worker for event-driven, low-latency handling (requires a TypeScript rewrite).
 
-### 10.4 监控与告警
+### 10.4 Monitoring and Alerts
 
-- **日志**：GitHub Actions 运行日志自动保留 90 天
-- **失败告警**：通过 GitHub Actions 的通知设置，Workflow 失败时发送邮件通知
-- **手动检查**：随时可在 Actions 页面查看每次执行的详细日志
+- **Logs**: GitHub Actions logs retained ~90 days
+- **Failures**: Workflow failure notifications via GitHub Actions settings
+- **Manual**: Inspect each run in the Actions UI
 
 ---
 
-## 11. 扩展性考虑
+## 11. Extensibility
 
-### 11.1 未来可扩展方向
+### 11.1 Future Directions
 
-1. **多平台支持**：接入更多视频平台（抖音、西瓜视频、Coursera 等）
-2. **内容预处理**：在提交 NotebookLM 前，先用 AI 生成视频摘要
-3. **Telegram/Discord Bot**：除邮件外，支持通过即时通讯工具提交链接
-4. **Web 管理面板**：提供简单的 Web UI 查看处理状态、管理 Notebook
-5. **批量导入**：支持从 CSV/JSON 文件批量导入链接
-6. **定时摘要**：定期触发 NotebookLM 生成音频概述并发送给用户
+1. **More platforms**: Douyin, Xigua, Coursera, etc.
+2. **Preprocessing**: AI-generated summaries before NotebookLM ingest
+3. **Telegram/Discord bots**: Submit links outside email
+4. **Web admin**: Simple UI for status and Notebook management
+5. **Bulk import**: CSV/JSON link imports
+6. **Scheduled digests**: Trigger NotebookLM audio overviews on a schedule
 
-### 11.2 插件架构
+### 11.2 Plugin-Oriented Adapters
 
-预留平台适配器接口，便于扩展新的视频平台：
+Reserve a platform adapter protocol for new video sites:
 
 ```python
 class PlatformAdapter(Protocol):
-    """视频平台适配器协议"""
+    """Video platform adapter protocol."""
     
     @property
     def platform_name(self) -> str: ...
@@ -800,63 +800,63 @@ class PlatformAdapter(Protocol):
 
 ---
 
-## 12. 开发路线图
+## 12. Development Roadmap
 
-### Phase 1：核心 MVP
+### Phase 1: Core MVP
 
-- 邮件监控与链接提取
-- YouTube 链接验证
-- NotebookLM 写入（单一方案）
-- 基础白名单认证
-- SQLite 存储
+- Email monitoring and link extraction
+- YouTube link validation
+- NotebookLM write (single integration path)
+- Basic allowlist auth
+- SQLite storage
 
-### Phase 2：增强功能
+### Phase 2: Enhancements
 
-- 多平台支持（Bilibili、Vimeo 等）
-- 确认回执邮件
-- AI 辅助分类（可选，Gemini API / 本地模型）
-- 配置文件热加载
-- Docker 部署支持
+- Multi-platform (Bilibili, Vimeo, …)
+- Confirmation receipts
+- Optional AI-assisted classification (Gemini API / local models)
+- Config hot reload
+- Docker deployment
 
-### Phase 3：运维与扩展
+### Phase 3: Operations and Scale
 
-- 健康检查端点
-- 结构化日志与监控
-- 死信队列管理
-- Web 管理面板（可选）
+- Health check endpoint
+- Structured logging and monitoring
+- Dead-letter management
+- Optional web admin UI
 
 ---
 
-## 附录 A：NotebookLM API 快速参考
+## Appendix A: NotebookLM API Quick Reference
 
-### 创建 Notebook
+### Create Notebook
 
 ```
 POST /v1alpha/projects/{PROJECT}/locations/{LOCATION}/notebooks
 Body: { "displayName": "My Notebook" }
 ```
 
-### 批量添加源
+### Batch add sources
 
 ```
 POST /v1alpha/projects/{PROJECT}/locations/{LOCATION}/notebooks/{ID}/sources:batchCreate
 Body: { "userContents": [...] }
 ```
 
-### 列出 Notebook
+### List Notebooks
 
 ```
 GET /v1alpha/projects/{PROJECT}/locations/{LOCATION}/notebooks
 ```
 
-### 删除源
+### Delete sources
 
 ```
 POST /v1alpha/projects/{PROJECT}/locations/{LOCATION}/notebooks/{ID}/sources:batchDelete
 Body: { "names": ["SOURCE_RESOURCE_NAME"] }
 ```
 
-## 附录 B：支持的 URL 正则模式
+## Appendix B: Supported URL Regex Patterns
 
 ```python
 URL_PATTERNS = {
