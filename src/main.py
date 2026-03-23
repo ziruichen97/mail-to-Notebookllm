@@ -174,22 +174,26 @@ def run(config_path: str | None = None) -> int:
     logger.exception("Failed to initialize NotebookLM writer")
     return 1
 
+  MAX_EMAILS_PER_RUN = 50
+
   processed_uids: list[int] = []
+  rejected_uids: list[int] = []
   total_submitted = 0
   total_failed = 0
 
-  for uid, email_msg in emails:
+  for uid, email_msg in emails[:MAX_EMAILS_PER_RUN]:
     logger.info("Processing email (subject has %d chars)", len(email_msg.subject))
 
     result = process_email(uid, email_msg, config, writer, logger)
 
     if not result.authorized:
+      rejected_uids.append(uid)
       continue
 
     total_submitted += result.links_submitted
     total_failed += result.links_failed
 
-    # Send reply if configured
+    # Send reply if configured — never reply to unauthorized senders
     has_content = result.links_found > 0 or result.mode == ProcessingMode.FULL_CONTENT
     if config.notification.send_reply and has_content:
       try:
@@ -201,13 +205,26 @@ def run(config_path: str | None = None) -> int:
 
     processed_uids.append(uid)
 
-  # Mark processed emails as seen
-  if processed_uids:
-    mark_as_seen(config.email, processed_uids)
+  # Mark both processed and rejected emails as seen so they are not re-fetched.
+  # Rejected (unauthorized) emails are silently discarded — no reply is sent,
+  # to avoid confirming the inbox address to spammers.
+  all_handled_uids = processed_uids + rejected_uids
+  if all_handled_uids:
+    mark_as_seen(config.email, all_handled_uids)
+
+  if rejected_uids:
+    logger.info("Rejected %d unauthorized email(s)", len(rejected_uids))
+
+  if len(emails) > MAX_EMAILS_PER_RUN:
+    logger.warning(
+      "Inbox has %d unseen emails, processed %d this run (limit %d). "
+      "Remaining will be handled in the next run.",
+      len(emails), len(all_handled_uids), MAX_EMAILS_PER_RUN,
+    )
 
   logger.info(
-    "--- Polling complete: %d email(s) processed, %d link(s) submitted, %d failed ---",
-    len(processed_uids), total_submitted, total_failed,
+    "--- Polling complete: %d email(s) processed, %d rejected, %d link(s) submitted, %d failed ---",
+    len(processed_uids), len(rejected_uids), total_submitted, total_failed,
   )
   return 0
 
