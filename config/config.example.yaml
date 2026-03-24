@@ -12,6 +12,7 @@ email:
   smtp:
     host: "smtp.gmail.com"       # Outlook: smtp.office365.com
     port: 587
+    # true = STARTTLS (587). false = implicit SSL / SMTP_SSL — Netease 163/188: smtp.163.com / smtp.188.com, port 465, use_tls: false
     use_tls: true
   username: "${EMAIL_USERNAME}"
   password: "${EMAIL_PASSWORD}"  # Gmail: use app-specific password

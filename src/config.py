@@ -122,6 +122,9 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     config.email.smtp.host = v
   if v := os.environ.get("EMAIL_SMTP_PORT"):
     config.email.smtp.port = int(v)
+  if (v := os.environ.get("EMAIL_SMTP_USE_TLS")) is not None:
+    # true = STARTTLS (587); false = SMTP_SSL (465) — Netease often needs false + 465
+    config.email.smtp.use_tls = v.strip().lower() not in ("0", "false", "no", "off")
   if v := os.environ.get("AUTH_SUBJECT_KEY"):
     config.auth.subject_key = v
   if v := os.environ.get("AUTH_ALLOWED_SENDERS"):
