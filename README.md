@@ -53,7 +53,10 @@ In your forked repo, go to **Settings → Secrets and variables → Actions** an
 | `EMAIL_PASSWORD` | Yes | Mailbox password or app-specific password |
 | `AUTH_ALLOWED_SENDERS` | Yes | Allowed senders, comma-separated (e.g., `me@gmail.com,me@outlook.com`) |
 | `EMAIL_IMAP_HOST` | No | IMAP server address (default: `imap.gmail.com`) |
+| `EMAIL_IMAP_SEND_CLIENT_ID` | No | `true` (default) sends RFC 2971 IMAP ID after login; set `false` only if your server rejects the `ID` command. **Netease (163/126/188) requires client ID** — keep the default. |
 | `EMAIL_SMTP_HOST` | No | SMTP server address (default: `smtp.gmail.com`) |
+| `EMAIL_SMTP_PORT` | No | SMTP port (default `587` with STARTTLS; Netease often `465`) |
+| `EMAIL_SMTP_USE_TLS` | No | `true` (default) = STARTTLS on port 587 (Gmail/Outlook). `false` = implicit TLS (`SMTP_SSL`), use with Netease on port **465**. Wrong mode causes immediate disconnect. |
 | `NOTEBOOKLM_AUTH_JSON` | Depends | Auth JSON for notebooklm-py |
 | `NOTEBOOKLM_INTEGRATION` | No | `notebooklm_py` (default) or `enterprise_api` |
 | `GCP_PROJECT_NUMBER` | Depends | Enterprise API project number |
@@ -72,6 +75,11 @@ In your forked repo, go to **Settings → Secrets and variables → Actions** an
 
 #### Other Providers
 Set `EMAIL_IMAP_HOST` and `EMAIL_SMTP_HOST` to your provider's IMAP/SMTP servers.
+
+#### Netease (163 / 126 / 188 / yeah.net)
+Use the IMAP host your provider documents (e.g. `imap.163.com`, `imap.188.com`). Enable IMAP in webmail and use a **client authorization code** (授权码) as `EMAIL_PASSWORD`, not your normal web password. Netease rejects connections that omit [IMAP `ID`](https://www.ietf.org/rfc/rfc2971.html) before opening the folder (`Unsafe Login`); this project sends client identification automatically after login. If you truly need to disable it, set `EMAIL_IMAP_SEND_CLIENT_ID=false`.
+
+**SMTP (reply emails):** Netease usually needs **implicit SSL** on port **465**, not Gmail-style STARTTLS on 587. Set repository secrets `EMAIL_SMTP_HOST` (e.g. `smtp.188.com`), `EMAIL_SMTP_PORT=465`, and `EMAIL_SMTP_USE_TLS=false`. If you only override IMAP but leave SMTP defaults, replies will still point at Gmail and fail.
 
 ### 4. Configure NotebookLM Integration
 

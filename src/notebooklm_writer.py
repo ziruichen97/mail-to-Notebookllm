@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -185,73 +186,89 @@ class EnterpriseAPIWriter(NotebookLMWriter):
 # ---------------------------------------------------------------------------
 
 class NotebookLMPyWriter(NotebookLMWriter):
-  """Uses the unofficial notebooklm-py library."""
+  """Uses notebooklm-py (async ``NotebookLMClient`` — v0.3+)."""
 
   def __init__(self, config: NotebookLMConfig):
     self.config = config
-    self._client = None
 
     if config.auth_json:
       os.environ.setdefault("NOTEBOOKLM_AUTH_JSON", config.auth_json)
 
-  def _get_client(self):
-    if self._client is not None:
-      return self._client
-
+  def _get_notebooklm_client_class(self):
     try:
-      from notebooklm import NotebookLM
-      self._client = NotebookLM()
-      return self._client
+      from notebooklm import NotebookLMClient
+      return NotebookLMClient
     except ImportError:
       raise RuntimeError(
         "notebooklm-py is required. Install with: pip install notebooklm-py"
-      )
+      ) from None
 
   def ensure_notebook(self, name: str) -> str:
-    client = self._get_client()
-    try:
-      notebooks = client.list_notebooks()
-      for nb in notebooks:
-        nb_name = getattr(nb, "title", None) or getattr(nb, "name", "")
-        if nb_name == name:
-          nb_id = getattr(nb, "id", None) or getattr(nb, "notebook_id", str(nb))
-          logger.info("Found existing notebook: %s", name)
-          return str(nb_id)
+    NotebookLMClient = self._get_notebooklm_client_class()
 
-      nb = client.create_notebook(name)
-      nb_id = getattr(nb, "id", None) or getattr(nb, "notebook_id", str(nb))
-      logger.info("Created new notebook: %s", name)
-      return str(nb_id)
+    async def _run() -> str:
+      async with await NotebookLMClient.from_storage() as client:
+        notebooks = await client.notebooks.list()
+        for nb in notebooks:
+          if nb.title == name:
+            logger.info("Found existing notebook: %s", name)
+            return str(nb.id)
+        created = await client.notebooks.create(name)
+        logger.info("Created new notebook: %s", name)
+        return str(created.id)
+
+    try:
+      return asyncio.run(_run())
     except Exception:
       logger.exception("Failed to ensure notebook via notebooklm-py")
       raise
 
   def add_sources(self, notebook_id: str, links: list[VideoLink]) -> list[VideoLink]:
-    client = self._get_client()
+    NotebookLMClient = self._get_notebooklm_client_class()
 
-    for link in links:
-      try:
-        if link.platform == Platform.YOUTUBE:
-          source = client.add_youtube_source(notebook_id, link.normalized_url)
-        else:
-          source = client.add_url_source(notebook_id, link.normalized_url)
+    async def _run() -> None:
+      async with await NotebookLMClient.from_storage() as client:
+        for link in links:
+          try:
+            # add_url detects YouTube vs web URLs internally
+            source = await client.sources.add_url(
+              notebook_id,
+              link.normalized_url,
+              wait=True,
+              wait_timeout=120.0,
+            )
+            link.source_id = str(source.id)
+            link.submit_status = SubmitStatus.SUBMITTED
+          except Exception as exc:
+            link.submit_status = SubmitStatus.FAILED
+            link.error_message = type(exc).__name__
+            logger.warning(
+              "Failed to add source for link on %s: %s",
+              link.platform.value,
+              exc,
+            )
 
-        link.source_id = getattr(source, "id", None) or str(source)
-        link.submit_status = SubmitStatus.SUBMITTED
-      except Exception as exc:
-        link.submit_status = SubmitStatus.FAILED
-        link.error_message = type(exc).__name__
-        logger.warning("Failed to add source for link on %s", link.platform.value)
-
+    asyncio.run(_run())
     submitted = sum(1 for l in links if l.submit_status == SubmitStatus.SUBMITTED)
     logger.info("Submitted %d/%d source(s) via notebooklm-py", submitted, len(links))
     return links
 
   def add_text_source(self, notebook_id: str, title: str, content: str) -> str | None:
-    client = self._get_client()
+    NotebookLMClient = self._get_notebooklm_client_class()
+
+    async def _run() -> str | None:
+      async with await NotebookLMClient.from_storage() as client:
+        source = await client.sources.add_text(
+          notebook_id,
+          title,
+          content,
+          wait=True,
+          wait_timeout=120.0,
+        )
+        return str(source.id)
+
     try:
-      source = client.add_text_source(notebook_id, content, title=title)
-      source_id = getattr(source, "id", None) or str(source)
+      source_id = asyncio.run(_run())
       logger.info("Text source submitted via notebooklm-py")
       return source_id
     except Exception:

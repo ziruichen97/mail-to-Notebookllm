@@ -4,12 +4,15 @@
 
 email:
   imap:
-    host: "imap.gmail.com"       # Outlook: outlook.office365.com
+    host: "imap.gmail.com"       # Outlook: outlook.office365.com; Netease: imap.163.com / imap.188.com
     port: 993
     use_ssl: true
+    # RFC 2971 IMAP ID — required by Netease (163/126/188); omit or set false only if your server breaks
+    send_client_id: true
   smtp:
     host: "smtp.gmail.com"       # Outlook: smtp.office365.com
     port: 587
+    # true = STARTTLS (587). false = implicit SSL / SMTP_SSL — Netease 163/188: smtp.163.com / smtp.188.com, port 465, use_tls: false
     use_tls: true
   username: "${EMAIL_USERNAME}"
   password: "${EMAIL_PASSWORD}"  # Gmail: use app-specific password

@@ -6,6 +6,7 @@ import email
 import email.utils
 import logging
 import smtplib
+import ssl
 from datetime import datetime
 from email.header import decode_header
 from email.mime.text import MIMEText
@@ -16,6 +17,34 @@ from src.config import EmailConfig
 from src.models import EmailMessage
 
 logger = logging.getLogger("mail2nlm")
+
+# Avoid hanging on bad networks (CI, strict firewalls)
+_SMTP_TIMEOUT_SEC = 30
+
+# Shown in IMAP ID (RFC 2971); Netease requires this before SELECT — see Netease IMAP FAQ.
+_IMAP_CLIENT_NAME = "MailToNotebookLM"
+_IMAP_CLIENT_VERSION = "1.0.0"
+_IMAP_VENDOR = "mail-to-notebooklm"
+
+
+def _default_imap_client_id(username: str) -> dict[str, str]:
+  """Default ID fields; Netease examples use name, version, vendor, support-email."""
+  support = username.strip() if "@" in username else "noreply@localhost"
+  return {
+    "name": _IMAP_CLIENT_NAME,
+    "version": _IMAP_CLIENT_VERSION,
+    "vendor": _IMAP_VENDOR,
+    "support-email": support,
+  }
+
+
+def _send_imap_client_id(client: IMAPClient, config: EmailConfig) -> None:
+  """Send IMAP ID after login, before SELECT. Required by Netease (163/126/188) IMAP."""
+  if not config.imap.send_client_id:
+    return
+  params = config.imap.client_id or _default_imap_client_id(config.username)
+  client.id_(params)
+  logger.debug("IMAP ID (RFC 2971) sent")
 
 
 def _decode_header_value(raw: str | bytes | None) -> str:
@@ -71,6 +100,7 @@ def fetch_unseen_emails(config: EmailConfig) -> list[tuple[int, EmailMessage]]:
   try:
     client = IMAPClient(config.imap.host, port=config.imap.port, ssl=config.imap.use_ssl)
     client.login(config.username, config.password)
+    _send_imap_client_id(client, config)
     client.select_folder(config.folder, readonly=False)
 
     uids = client.search(["UNSEEN"])
@@ -120,6 +150,7 @@ def mark_as_seen(config: EmailConfig, uids: list[int]) -> None:
   try:
     client = IMAPClient(config.imap.host, port=config.imap.port, ssl=config.imap.use_ssl)
     client.login(config.username, config.password)
+    _send_imap_client_id(client, config)
     client.select_folder(config.folder, readonly=False)
     client.add_flags(uids, [b"\\Seen"])
     client.logout()
@@ -129,22 +160,45 @@ def mark_as_seen(config: EmailConfig, uids: list[int]) -> None:
 
 
 def send_reply(config: EmailConfig, to_addr: str, subject: str, body: str) -> None:
-  """Send a plain-text reply email via SMTP."""
+  """Send a plain-text reply email via SMTP.
+
+  ``smtp.use_tls`` True: plain connect + STARTTLS (typical Gmail/Outlook port 587).
+  ``smtp.use_tls`` False: implicit TLS via SMTP_SSL (typical Netease port 465).
+  """
   try:
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"] = config.username
     msg["To"] = to_addr
     msg["Subject"] = f"Re: {subject}"
 
-    if config.smtp.use_tls:
-      server = smtplib.SMTP(config.smtp.host, config.smtp.port)
-      server.starttls()
-    else:
-      server = smtplib.SMTP_SSL(config.smtp.host, config.smtp.port)
+    tls_ctx = ssl.create_default_context()
 
-    server.login(config.username, config.password)
-    server.send_message(msg)
-    server.quit()
+    if config.smtp.use_tls:
+      server = smtplib.SMTP(
+        config.smtp.host, config.smtp.port, timeout=_SMTP_TIMEOUT_SEC,
+      )
+      try:
+        server.starttls(context=tls_ctx)
+      except Exception:
+        server.close()
+        raise
+    else:
+      server = smtplib.SMTP_SSL(
+        config.smtp.host,
+        config.smtp.port,
+        context=tls_ctx,
+        timeout=_SMTP_TIMEOUT_SEC,
+      )
+
+    try:
+      server.login(config.username, config.password)
+      server.send_message(msg)
+    finally:
+      try:
+        server.quit()
+      except Exception:
+        server.close()
+
     logger.info("Reply email sent")
   except Exception:
     logger.exception("Failed to send reply email")
