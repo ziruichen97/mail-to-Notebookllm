@@ -28,9 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          # Uncomment below if using notebooklm-py:
-          pip install notebooklm-py
-          # Uncomment below if using Enterprise API:
+          # Enterprise API only (not needed for notebooklm-py):
           # pip install google-auth
 
       - name: Run email processor
