@@ -79,7 +79,10 @@ Set `EMAIL_IMAP_HOST` and `EMAIL_SMTP_HOST` to your provider's IMAP/SMTP servers
 
 ```bash
 pip install notebooklm-py
-notebooklm auth login                    # Log in via browser
+pip install "notebooklm-py[browser]"
+playwright install chromium
+
+notebooklm login                    # Log in via browser
 cat ~/.notebooklm/storage_state.json     # Copy this file's contents
 ```
 
