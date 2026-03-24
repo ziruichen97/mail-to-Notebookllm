@@ -28,9 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          # Uncomment below if using notebooklm-py:
-          pip install notebooklm-py
-          # Uncomment below if using Enterprise API:
+          # Enterprise API only (not needed for notebooklm-py):
           # pip install google-auth
 
       - name: Run email processor
@@ -38,7 +36,11 @@ jobs:
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_IMAP_HOST: ${{ secrets.EMAIL_IMAP_HOST }}
+          EMAIL_IMAP_PORT: ${{ secrets.EMAIL_IMAP_PORT }}
+          EMAIL_IMAP_SEND_CLIENT_ID: ${{ secrets.EMAIL_IMAP_SEND_CLIENT_ID }}
           EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
+          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
+          EMAIL_SMTP_USE_TLS: ${{ secrets.EMAIL_SMTP_USE_TLS }}
           AUTH_ALLOWED_SENDERS: ${{ secrets.AUTH_ALLOWED_SENDERS }}
           NOTEBOOKLM_AUTH_JSON: ${{ secrets.NOTEBOOKLM_AUTH_JSON }}
           NOTEBOOKLM_INTEGRATION: ${{ secrets.NOTEBOOKLM_INTEGRATION }}

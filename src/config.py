@@ -13,6 +13,9 @@ class ImapConfig(BaseModel):
   host: str = "imap.gmail.com"
   port: int = 993
   use_ssl: bool = True
+  # RFC 2971 IMAP ID — required by Netease (163/126/188) or SELECT may fail with "Unsafe Login"
+  send_client_id: bool = True
+  client_id: dict[str, str] | None = None
 
 
 class SmtpConfig(BaseModel):
@@ -113,10 +116,15 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     config.email.imap.host = v
   if v := os.environ.get("EMAIL_IMAP_PORT"):
     config.email.imap.port = int(v)
+  if (v := os.environ.get("EMAIL_IMAP_SEND_CLIENT_ID")) is not None:
+    config.email.imap.send_client_id = v.strip().lower() not in ("0", "false", "no", "off")
   if v := os.environ.get("EMAIL_SMTP_HOST"):
     config.email.smtp.host = v
   if v := os.environ.get("EMAIL_SMTP_PORT"):
     config.email.smtp.port = int(v)
+  if (v := os.environ.get("EMAIL_SMTP_USE_TLS")) is not None:
+    # true = STARTTLS (587); false = SMTP_SSL (465) — Netease often needs false + 465
+    config.email.smtp.use_tls = v.strip().lower() not in ("0", "false", "no", "off")
   if v := os.environ.get("AUTH_SUBJECT_KEY"):
     config.auth.subject_key = v
   if v := os.environ.get("AUTH_ALLOWED_SENDERS"):
